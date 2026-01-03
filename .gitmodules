@@ -7,3 +7,6 @@
 [submodule "environ/arm-trusted-firmware"]
 	path = environ/arm-trusted-firmware
 	url = https://github.com/terasic/arm-trusted-firmware
+[submodule "environ/u-boot-socfpga"]
+	path = environ/u-boot-socfpga
+	url = https://github.com/terasic/u-boot-socfpga
