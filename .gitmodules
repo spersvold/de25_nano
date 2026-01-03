@@ -4,3 +4,6 @@
 [submodule "sub/vctrl"]
 	path = sub/vctrl
 	url = https://github.com/spersvold/vctrl
+[submodule "environ/arm-trusted-firmware"]
+	path = environ/arm-trusted-firmware
+	url = https://github.com/terasic/arm-trusted-firmware
