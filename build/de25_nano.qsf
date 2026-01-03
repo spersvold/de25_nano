@@ -1,0 +1,93 @@
+## -*- mode: tcl; mode: font-lock; indent-tabs-mode: nil -*-
+## vi: set et ts=3 sw=3 sts=3:
+
+#============================================================
+set_global_assignment -name FAMILY "Agilex 5"
+set_global_assignment -name DEVICE A5EB013BB23BE4SCS
+set_global_assignment -name BOARD default
+set_global_assignment -name TOP_LEVEL_ENTITY de25_nano_top
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION 25.1.1
+set_global_assignment -name LAST_QUARTUS_VERSION "26.1.0 Pro Edition"
+set_global_assignment -name PROJECT_CREATION_TIME_DATE "Tue May  6 11:16:28 2025"
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name DEVICE_FILTER_PACKAGE VPBGA
+
+# Configuration scheme/pin
+#============================================================
+set_global_assignment -name USE_CONF_DONE SDM_IO16
+set_global_assignment -name USE_HPS_COLD_RESET SDM_IO11
+set_global_assignment -name STRATIXV_CONFIGURATION_SCHEME "ACTIVE SERIAL X4"
+set_global_assignment -name ACTIVE_SERIAL_CLOCK AS_FREQ_125MHZ
+set_global_assignment -name DEVICE_INITIALIZATION_CLOCK OSC_CLK_1_125MHZ
+set_global_assignment -name PWRMGT_VOLTAGE_OUTPUT_FORMAT "LINEAR FORMAT"
+set_global_assignment -name PWRMGT_LINEAR_FORMAT_N "-12"
+set_global_assignment -name POWER_APPLY_THERMAL_MARGIN ADDITIONAL
+
+# Compile options
+#============================================================
+set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+set_global_assignment -name OPTIMIZATION_MODE "AGGRESSIVE PERFORMANCE"
+set_global_assignment -name OPTIMIZATION_TECHNIQUE SPEED
+set_global_assignment -name SYNTH_TIMING_DRIVEN_SYNTHESIS ON
+set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS ON
+
+# Pin assignments
+#============================================================
+source scripts/misc_pin_assignments.tcl
+#source scripts/gpio_pin_assignments.tcl
+#source scripts/sdram_pin_assignments.tcl
+source scripts/lpddr4a_pin_assignments.tcl
+#source scripts/lpddr4b_pin_assignments.tcl
+source scripts/hdmi_pin_assignments.tcl
+#source scripts/cam_pin_assignments.tcl
+#source scripts/hps_pin_assignments.tcl
+
+# Read Altera IP first (for constraints etc.)
+#============================================================
+set_global_assignment -name IP_FILE ip/reset_release.ip
+set_global_assignment -name IP_FILE ip/core_pll.ip
+set_global_assignment -name IP_FILE ip/hdmi_pll.ip
+set_global_assignment -name IP_FILE ip/agilex_hps.ip
+set_global_assignment -name IP_FILE ip/emif_io96b_hps.ip
+set_global_assignment -name IP_FILE ip/ace5_translate.ip
+
+# Add our RTL
+#============================================================
+# Define vendor (for bram inference)
+set_global_assignment -name VERILOG_MACRO "VENDOR_ALTERA=1"
+
+# Common library files
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/bram_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/bram_1rw.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/bram_sdp.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/synchronizer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/areset_synchronizer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/signal_filter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/cdc_tgl.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/scfifo.sv
+
+# Video controller
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_timing.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_regs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_clut.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_lbuff.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_cproc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_fbuff.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_axim.sv
+
+# HDMI TX Config
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hdmi_tx_config.sv
+
+# HDMI Output registers
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hdmi_output.sv
+
+# Top-level wrappers
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hps_wrapper.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/lw_ctrl_bridge.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/de25_nano_top.sv
+
+# And our constraints at the end
+#============================================================
+set_global_assignment -name SDC_FILE de25_nano.sdc
