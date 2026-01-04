@@ -10,3 +10,6 @@
 [submodule "environ/u-boot-socfpga"]
 	path = environ/u-boot-socfpga
 	url = https://github.com/terasic/u-boot-socfpga
+[submodule "environ/linux-socfpga"]
+	path = environ/linux-socfpga
+	url = https://github.com/terasic/linux-socfpga
