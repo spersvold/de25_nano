@@ -1,0 +1,125 @@
+// -*- mode: verilog; mode: font-lock; indent-tabs-mode: nil -*-
+// vi: set et ts=3 sw=3 sts=3:
+//--------------------------------------------------------------------------
+//
+// VCS Message control/config file
+//
+// Note: VCS is very picky about which method that can be used to control
+//       a particular Message ID. You might have to try a few different
+//       ways to get it working for your particular message ID.
+//
+// The following messages can only be set globally, i.e. as a -suppress=XXXX
+// argument on the VCS command line. The can not be assososiated with
+// any files, i.e. they will generate "File condition not applicable
+// for the message ID"  if they are used in the -msg_config files,
+// so they have to be listed explicitly in one of the sims config files.
+//
+// Lint-[NS]         Null statement
+//
+//----------------------------------------------------------------------------
+
+//
+// Suppress Warning messages
+//
+// NOTE: a "//@IP_FILES@" marker line is expanded at compile time (see the
+//       compile target in sim.mk) into one "+file=<path>;" line per generated
+//       IP source in unique_ip_files.f. Drop it inside a block to suppress
+//       that message ID on all (dynamically-named) IP sources, without having
+//       to hand-maintain their paths here.
+//
+{
+ // Warning-[OSPA-N] Overriding same parameter again
+ -suppress=OSPA-N;
+}
+{
+ // Warning-[TMBIN] Too many bits in Based Number
+ -suppress=TMBIN;
+}
+{
+ // Warning-[IWNF] Implicit wire has no fanin
+ -suppress=IWNF;
+ // Quartus library files
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_sm_hps.sv;
+}
+{
+ // Note-[SV-LCM-PPWI] Package previously wildcard imported
+ -suppress=SV-LCM-PPWI;
+ // Quartus library files
+ +file=$QUARTUS_HOME/eda/sim_lib/altera_lnsim.sv;
+ +file=$QUARTUS_HOME/eda/sim_lib/synopsys/tennm_atoms_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_io96_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_sm4_hssi_ncrypt.sv;
+}
+{
+ // Warning-[TMR] Text macro redefined
+ -suppress=TMR;
+ //@IP_FILES@
+ // Quartus library files
+ +file=$QUARTUS_HOME/eda/sim_lib/altera_mf.v;
+ +file=$QUARTUS_HOME/eda/sim_lib/altera_lnsim.sv;
+ +file=$QUARTUS_HOME/eda/sim_lib/synopsys/tennm_atoms_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_hvio_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_io96_ncrypt.sv;
+}
+{
+ // Warning-[UII-L] Interface not instantiated
+ -suppress=UII-L;
+ // Quartus library files
+ +file=$QUARTUS_HOME/eda/sim_lib/altera_lnsim.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_sm4_hssi_ncrypt.sv;
+}
+{
+ // Warning-[FLWI] For loop without initializer
+ -suppress=FLWI;
+ // Quartus library files
+ +file=$QUARTUS_HOME/eda/sim_lib/synopsys/tennm_atoms_ncrypt.sv;
+}
+{
+ // Warning-[NZIR] Incorrect size number
+ -suppress=NZIR;
+ // Quartus library files
+ +file=$QUARTUS_HOME/eda/sim_lib/synopsys/tennm_atoms_ncrypt.sv;
+}
+{
+ // Warning-[ENUMASSIGN_OPR] Illegal assignment to enum variable
+ -suppress=ENUMASSIGN_OPR;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_sm4_hssi_ncrypt.sv;
+}
+{
+ // Warning-[OPD] Override previous declaration
+ -suppress=OPD;
+ // Quartus library files
+ +file=$QUARTUS_HOME/eda/sim_lib/altera_lnsim.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_sm4_hssi_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_hvio_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_io96_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_io96.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_sm4_hssi_ncrypt.sv;
+ //@IP_FILES@
+}
+{
+ // Warning-[SIOB] Select index out of bounds
+ -suppress=SIOB;
+ //@IP_FILES@
+ // Quartus library files
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_hvio_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_io96_ncrypt.sv;
+}
+{
+ // Warning-[TFIPC] Too few instance port connections
+ -suppress=TFIPC;
+ // Quartus library files
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_hvio_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_revb_io96_ncrypt.sv;
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_sm_hps.sv;
+ //@IP_FILES@
+ // Project files
+ +file=../rtl/hdmi_output.sv;
+}
+{
+ // Warning-[PCWM-W] Port connection width mismatch
+ -suppress=PCWM-W;
+ // Quartus library files
+ +file=$QUARTUS_HOME/../devices/sim_lib/tennm_sm_hps.sv;
+ //@IP_FILES@
+}

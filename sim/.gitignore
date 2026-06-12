@@ -1,0 +1,11 @@
+core_pll_files.f
+hdmi_pll_files.f
+reset_release_files.f
+ace5_translate_files.f
+agilex_hps_files.f
+emif_io96b_hps_files.f
+unique_ip_files.f
+*_memfiles.f
+.ip_memfiles
+*.hex
+*.txt
