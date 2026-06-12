@@ -72,9 +72,18 @@ derive_clock_uncertainty
 # Declare them asynchronous so STA treats the crossing as a CDC, not a
 # synchronous (and now tighter, at 250 MHz) timing path.
 # Pin hierarchy mirrors the hdmi_tx_clk source above (altera_iopll_2110).
+# CLOCK0_50 is its own async group: it hosts the HDMI-TX config engine and the
+# hdmi_pll_recfg reconfiguration FSM, whose apply/done/status crossings to
+# clk_sys are all handled by cdc_tgl/synchronizer.
 set_clock_groups -asynchronous \
     -group [get_clocks -of_objects [get_pins {u_core_pll|iopll_0|tennm_ph2_iopll|out_clk[*]}]] \
-    -group [get_clocks -of_objects [get_pins {u_hdmi_pll|iopll_0|tennm_ph2_iopll|out_clk[*]}]]
+    -group [get_clocks -of_objects [get_pins {u_hdmi_pll|iopll_0|tennm_ph2_iopll|out_clk[*]}]] \
+    -group [get_clocks {CLOCK0_50}]
+
+# NOTE: the Timing Analyzer only validates the *initial* hdmi_pll settings.
+# After dynamic reconfiguration clk_pix runs at a different (possibly higher)
+# rate -- set the hdmi_pll IP output frequency to the highest target video mode
+# so STA covers the worst case, and re-check timing per intended mode.
 
 
 
@@ -92,6 +101,12 @@ set_false_path -from * -to [get_ports {LED[*]}]
 set_false_path -from [get_keepers -no_duplicates {u_vctrl_core|u_regs|ctrl*}]
 set_false_path -from [get_keepers -no_duplicates {u_vctrl_core|u_regs|htim*}]
 set_false_path -from [get_keepers -no_duplicates {u_vctrl_core|u_regs|vtim*}]
+
+###
+# PLL reconfiguration: PLLDIVCNT (M/N/C) is quasi-static, sampled by
+# hdmi_pll_recfg in the CLOCK0_50 domain only when triggered. Covered by the
+# CLOCK0_50 async group above; declared explicitly for clarity.
+set_false_path -from [get_keepers -no_duplicates {u_vctrl_core|u_regs|pll_divcnt*}]
 
 #**************************************************************
 # Set Multicycle Path

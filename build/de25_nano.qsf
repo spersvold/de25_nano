@@ -77,6 +77,12 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_fbuff.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_axim.sv
 
+# HDMI PLL reconfiguration FSM
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hdmi_pll_recfg.sv
+
+# clk_pix frequency monitor (SignalTap / bring-up)
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/freq_counter.sv
+
 # HDMI TX Config
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hdmi_tx_config.sv
 

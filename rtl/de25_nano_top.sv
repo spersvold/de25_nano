@@ -593,12 +593,110 @@ module de25_nano_top
    wire                      clk_pix;
    wire                      hdmi_pll_locked;
 
+   // core_avl reconfiguration bus (buf_refclk domain), driven by hdmi_pll_recfg
+   wire [8:0]                avl_address;
+   wire                      avl_read;
+   wire [7:0]                avl_readdata;
+   wire                      avl_write;
+   wire [7:0]                avl_writedata;
+
    hdmi_pll u_hdmi_pll
      (.refclk             (CLOCK1_50),
       .locked             (hdmi_pll_locked),
       .rst                (pll_rst),
-      .clk_pix
+      .clk_pix,
+      // dynamic reconfiguration (HVIO core_avl, IOSSM role driven by us)
+      .core_avl_clk       (buf_refclk),
+      .core_avl_address   (avl_address),
+      .core_avl_read      (avl_read),
+      .core_avl_readdata  (avl_readdata),
+      .core_avl_write     (avl_write),
+      .core_avl_writedata (avl_writedata)
       );
+
+   // Pixel-domain reset: mirrors rst_sys but gated on the PIXEL PLL lock
+   // (hdmi_pll_locked) instead of core_pll, and synchronized to clk_pix. So the
+   // pixel domain is held in reset whenever clk_pix is invalid -- including
+   // during a PLL reconfig, where hdmi_pll drops lock -- and releases cleanly
+   // once the pixel clock relocks.
+   wire                      rst_pix_in;
+   assign rst_pix_in = ~(key_f[1] & hdmi_pll_locked & por_done);
+
+   wire                      rst_pix;
+   areset_synchronizer #(.ACTIVE_HIGH (1)) u_pix_reset_sync
+     (.clk       (clk_pix),
+      .reset_in  (rst_pix_in),
+      .reset_out (rst_pix));
+
+   // clk_pix frequency monitor (bring-up / SignalTap). Counts clk_pix edges over
+   // a fixed window timed by buf_refclk (50 MHz): freq_pix_khz reads the pixel
+   // clock in kHz (148500 = 148.5 MHz, 74250 = 74.25 MHz, 0 = stopped). Lives in
+   // the buf_refclk domain so it stays readable even while clk_pix is unstable.
+   // Uses rst_pix as its measurement reset: rst_pix asserts only on PLL unlock /
+   // POR / the reset key (not on the software VEN), so the counter runs whenever
+   // the PLL is locked and reads the relocked frequency right after a reconfig.
+`ifdef SIMULATION
+   localparam int FREQ_WINDOW = 5000;    // 100 us @ 50 MHz; freq_pix_khz = f_pix(kHz)/10
+`else
+   localparam int FREQ_WINDOW = 50000;   // 1 ms @ 50 MHz; freq_pix_khz = f_pix in kHz
+`endif
+   (* preserve *)
+   wire [23:0]               freq_pix_khz;   // buf_refclk domain
+   freq_counter #(.REF_WINDOW (FREQ_WINDOW), .CNT_W (24)) u_freq_pix
+     (.ref_clk    (buf_refclk),
+      .ref_rst_n  (por_rstn),
+      .meas_clk   (clk_pix),
+      .meas_rst_n (~rst_pix),
+      .freq_out   (freq_pix_khz));
+
+   //
+   // HDMI PLL dynamic reconfiguration
+   //
+   // The video controller exposes PLLDIVCNT (logical M/N/C) and a W1S
+   // PLLCTRL.apply trigger in the clk_sys CSR domain. hdmi_pll_recfg runs the
+   // Agilex 5 HVIO reconfiguration sequence in the buf_refclk (core_avl) domain.
+   // apply/done cross via toggle CDC; M/N/C are quasi-static (held stable by
+   // the apply/done handshake); locked/error are level-synchronized to clk_sys.
+
+   wire [31:0]               hdmi_pll_divcnt;       // PLLDIVCNT (clk_sys, quasi-static)
+   wire                      hdmi_pll_apply;        // trigger pulse (clk_sys)
+   wire                      hdmi_pll_done;         // done pulse (clk_sys)
+   wire                      hdmi_pll_locked_sys;   // synced PLL locked (clk_sys)
+   wire                      hdmi_pll_error_sys;    // synced recal error (clk_sys)
+
+   wire                      hdmi_recfg_start;      // buf_refclk
+   wire                      hdmi_recfg_done;       // buf_refclk
+   wire                      hdmi_recfg_error;      // buf_refclk
+
+   // apply trigger: clk_sys -> buf_refclk
+   cdc_tgl u_pll_apply_cdc
+     (.clk_i (clk_sys), .rst_i (rst_sys), .clk_o (buf_refclk),
+      .i (hdmi_pll_apply), .o (hdmi_recfg_start));
+
+   // done pulse: buf_refclk -> clk_sys
+   cdc_tgl u_pll_done_cdc
+     (.clk_i (buf_refclk), .rst_i (~por_rstn), .clk_o (clk_sys),
+      .i (hdmi_recfg_done), .o (hdmi_pll_done));
+
+   // status levels -> clk_sys
+   synchronizer u_pll_locked_sync (.clk (clk_sys), .d (hdmi_pll_locked),  .q (hdmi_pll_locked_sys));
+   synchronizer u_pll_error_sync  (.clk (clk_sys), .d (hdmi_recfg_error), .q (hdmi_pll_error_sys));
+
+   hdmi_pll_recfg u_hdmi_pll_recfg
+     (.clk           (buf_refclk),
+      .rst_n         (por_rstn),
+      .start         (hdmi_recfg_start),
+      .m             (hdmi_pll_divcnt[ 8:0]),
+      .n             (hdmi_pll_divcnt[15:9]),
+      .c             (hdmi_pll_divcnt[24:16]),
+      .pll_locked_in (hdmi_pll_locked),
+      .done          (hdmi_recfg_done),
+      .error         (hdmi_recfg_error),
+      .avl_address,
+      .avl_write,
+      .avl_writedata,
+      .avl_read,
+      .avl_readdata);
 
    wire                      hdmi_config_done_pix;
    synchronizer hdmi_config_done_sync (.clk(clk_pix), .d(hdmi_config_done), .q(hdmi_config_done_pix));
@@ -653,6 +751,12 @@ module de25_nano_top
       .fb_rdata,
       .fb_rvalid,
       .clk_pix,
+      .rst_pix,
+      .pll_divcnt (hdmi_pll_divcnt),
+      .pll_apply  (hdmi_pll_apply),
+      .pll_done   (hdmi_pll_done),
+      .pll_locked (hdmi_pll_locked_sys),
+      .pll_error  (hdmi_pll_error_sys),
       .vga_r,
       .vga_g,
       .vga_b,
