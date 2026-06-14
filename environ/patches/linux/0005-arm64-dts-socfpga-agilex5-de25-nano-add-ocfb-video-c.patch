@@ -1,7 +1,7 @@
-From 457367436f5b518a0fde73fcf05663bf69b234d1 Mon Sep 17 00:00:00 2001
+From 8839a0484bacc71580c7d9cccc1e417db4038c9a Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
-Subject: [PATCH] arm64: dts: socfpga: agilex5: de25-nano: add ocfb video
+Subject: [PATCH 5/5] arm64: dts: socfpga: agilex5: de25-nano: add ocfb video
  controller
 
 Wire up the FPGA video controller (opencores,ocfb -- the vctrl RTL block)
@@ -13,14 +13,14 @@ output ceiling.
 
 Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
- .../dts/intel/socfpga_agilex5_de25_nano.dts   | 82 +++++++++++++++++++
- 1 file changed, 82 insertions(+)
+ .../dts/intel/socfpga_agilex5_de25_nano.dts   | 84 +++++++++++++++++++
+ 1 file changed, 84 insertions(+)
 
 diff --git a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
-index 16556851..6ac688fc 100644
+index e1acbfc7..61755df7 100644
 --- a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
 +++ b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
-@@ -38,6 +38,88 @@ memory {
+@@ -38,6 +38,90 @@ memory {
  	};
  };
  
@@ -81,6 +81,8 @@ index 16556851..6ac688fc 100644
 +	framebuffer0: framebuffer@20000000 {
 +		compatible = "opencores,ocfb";
 +		reg = <0x20000000 0x1000>;
++		/* vctrl vsync -> fpga2hps_interrupt_irq0[0] -> GIC SPI 17 */
++		interrupts = <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>;
 +		memory-region = <&fb_reserved>;
 +		/* this vctrl implements the optional 0x20 pitch register and
 +		 * hardware scan doubling (control register bit 16) */

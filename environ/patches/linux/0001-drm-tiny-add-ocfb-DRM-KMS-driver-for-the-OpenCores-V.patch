@@ -1,8 +1,8 @@
-From eeb1be98f381191e7358f703ca09148d301b9f8f Mon Sep 17 00:00:00 2001
+From 1b50103ce74c4e6fdbefb7750bf9db38b1f0bdb8 Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
-Subject: [PATCH 1/2] drm/tiny: add ocfb DRM/KMS driver for the OpenCores VGA/LCD
- core
+Subject: [PATCH 1/5] drm/tiny: add ocfb DRM/KMS driver for the OpenCores
+ VGA/LCD core
 
 Add a DRM/KMS driver for the OpenCores VGA/LCD 2.0 core (ocfb) and
 register-compatible derivatives, with optional support for a line-pitch
@@ -25,9 +25,9 @@ Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
  drivers/gpu/drm/tiny/Kconfig    |  16 +
  drivers/gpu/drm/tiny/Makefile   |   1 +
- drivers/gpu/drm/tiny/ocfb-drm.c | 670 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/tiny/ocfb-drm.c | 772 ++++++++++++++++++++++++++++++++
  drivers/video/fbdev/Kconfig     |   3 +
- 4 files changed, 690 insertions(+)
+ 4 files changed, 792 insertions(+)
  create mode 100644 drivers/gpu/drm/tiny/ocfb-drm.c
 
 diff --git a/drivers/gpu/drm/tiny/Kconfig b/drivers/gpu/drm/tiny/Kconfig
@@ -71,10 +71,10 @@ index 48d30bf6..06e9f104 100644
  obj-$(CONFIG_TINYDRM_HX8357D)		+= hx8357d.o
 diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
 new file mode 100644
-index 00000000..44009bf9
+index 00000000..f9ae13c9
 --- /dev/null
 +++ b/drivers/gpu/drm/tiny/ocfb-drm.c
-@@ -0,0 +1,670 @@
+@@ -0,0 +1,772 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * DRM/KMS driver for the OpenCores VGA/LCD 2.0 core (ocfb) and register-
@@ -98,6 +98,7 @@ index 00000000..44009bf9
 +
 +#include <linux/clk.h>
 +#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>
 +#include <linux/io.h>
 +#include <linux/iopoll.h>
 +#include <linux/math64.h>
@@ -123,6 +124,7 @@ index 00000000..44009bf9
 +#include <drm/drm_module.h>
 +#include <drm/drm_probe_helper.h>
 +#include <drm/drm_simple_kms_helper.h>
++#include <drm/drm_vblank.h>
 +
 +/* OCFB register map (subset; the OpenCores VGA/LCD core defines the rest) */
 +#define OCFB_CTRL	0x000
@@ -134,6 +136,7 @@ index 00000000..44009bf9
 +#define OCFB_PITCH	0x020
 +
 +#define OCFB_CTRL_VEN	0x00000001 /* Video Enable */
++#define OCFB_CTRL_VIE	0x00000002 /* VSync Interrupt Enable */
 +#define OCFB_CTRL_PC	0x00000800 /* 8-bit Pseudo Color Enable */
 +#define OCFB_CTRL_CD8	0x00000000 /* Color Depth 8 */
 +#define OCFB_CTRL_CD16	0x00000200 /* Color Depth 16 */
@@ -142,6 +145,8 @@ index 00000000..44009bf9
 +#define OCFB_CTRL_VBL8	0x00000180 /* Video memory Burst Length 8 */
 +#define OCFB_CTRL_HSL	0x00001000 /* HSync active low */
 +#define OCFB_CTRL_VSL	0x00002000 /* VSync active low */
++
++#define OCFB_STAT_VINT	0x00000010 /* VSync interrupt pending (write 1 to clear) */
 +
 +/*
 + * Programmable pixel-clock PLL CSRs (opencores,programmable-pixclk) -- an
@@ -177,6 +182,8 @@ index 00000000..44009bf9
 +	u32 max_pixclk_hz;		/* optional clk_pix ceiling, Hz (0 = none) */
 +	u16 pll_m, pll_n, pll_c;	/* divisors last written to PLLDIVCNT */
 +	bool pll_programmed;		/* pll_m/n/c hold a live value */
++	int irq;			/* vsync IRQ for vblank; <= 0 if not wired */
++	u32 ctrl;			/* live CTRL word, VIE masked (set in enable) */
 +	struct drm_simple_display_pipe pipe;
 +	struct drm_connector connector;
 +};
@@ -498,6 +505,24 @@ index 00000000..44009bf9
 +	ocfb_wr(ocfb, OCFB_VBARA, lower_32_bits(gem->dma_addr));
 +}
 +
++/*
++ * The core raises this once per frame at start-of-vblank (the same instant the
++ * scanout base is latched in hardware). Acknowledge it and run the vblank
++ * handler, which sends any page-flip event armed by ocfb_pipe_update().
++ */
++static irqreturn_t ocfb_irq_handler(int irq, void *arg)
++{
++	struct ocfb_drm *ocfb = arg;
++
++	if (!(ocfb_rd(ocfb, OCFB_STAT) & OCFB_STAT_VINT))
++		return IRQ_NONE;
++
++	ocfb_wr(ocfb, OCFB_STAT, OCFB_STAT_VINT);	/* W1C */
++	drm_crtc_handle_vblank(&ocfb->pipe.crtc);
++
++	return IRQ_HANDLED;
++}
++
 +static void ocfb_pipe_enable(struct drm_simple_display_pipe *pipe,
 +			     struct drm_crtc_state *crtc_state,
 +			     struct drm_plane_state *plane_state)
@@ -549,7 +574,16 @@ index 00000000..44009bf9
 +	if (!(m->flags & DRM_MODE_FLAG_PVSYNC))
 +		ctrl |= OCFB_CTRL_VSL;
 +
++	/*
++	 * Cache the control word with the vsync-interrupt enable masked off;
++	 * enable/disable_vblank flip OCFB_CTRL_VIE on top of this so the IRQ
++	 * only fires while vblank is actually in use.
++	 */
++	ocfb->ctrl = ctrl;
 +	ocfb_wr(ocfb, OCFB_CTRL, ctrl);
++
++	if (ocfb->irq > 0)
++		drm_crtc_vblank_on(&pipe->crtc);
 +}
 +
 +static enum drm_mode_status
@@ -577,6 +611,8 @@ index 00000000..44009bf9
 +{
 +	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
 +
++	if (ocfb->irq > 0)
++		drm_crtc_vblank_off(&pipe->crtc);
 +	ocfb_wr(ocfb, OCFB_CTRL, 0);
 +}
 +
@@ -584,8 +620,44 @@ index 00000000..44009bf9
 +			     struct drm_plane_state *old_state)
 +{
 +	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++	struct drm_crtc *crtc = &pipe->crtc;
++	struct drm_pending_vblank_event *event = crtc->state->event;
 +
++	/*
++	 * Latch the new scanout base; the hardware samples it at the next
++	 * start-of-frame, so the swap takes effect tear-free at the frame
++	 * boundary. Arm the flip-completion event for that vblank (sending it
++	 * immediately if vblank cannot be enabled, e.g. no IRQ wired).
++	 */
 +	ocfb_set_scanout(ocfb, pipe->plane.state);
++
++	if (event) {
++		crtc->state->event = NULL;
++		spin_lock_irq(&crtc->dev->event_lock);
++		if (crtc->state->active && drm_crtc_vblank_get(crtc) == 0)
++			drm_crtc_arm_vblank_event(crtc, event);
++		else
++			drm_crtc_send_vblank_event(crtc, event);
++		spin_unlock_irq(&crtc->dev->event_lock);
++	}
++}
++
++/* Unmask/mask the vsync interrupt by toggling VIE on the cached control word. */
++static int ocfb_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++
++	ocfb_wr(ocfb, OCFB_STAT, OCFB_STAT_VINT);	/* drop a stale request */
++	ocfb_wr(ocfb, OCFB_CTRL, ocfb->ctrl | OCFB_CTRL_VIE);
++
++	return 0;
++}
++
++static void ocfb_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++
++	ocfb_wr(ocfb, OCFB_CTRL, ocfb->ctrl);
 +}
 +
 +static const struct drm_simple_display_pipe_funcs ocfb_pipe_funcs = {
@@ -593,6 +665,8 @@ index 00000000..44009bf9
 +	.enable = ocfb_pipe_enable,
 +	.disable = ocfb_pipe_disable,
 +	.update = ocfb_pipe_update,
++	.enable_vblank = ocfb_pipe_enable_vblank,
++	.disable_vblank = ocfb_pipe_disable_vblank,
 +};
 +
 +static const struct drm_mode_config_funcs ocfb_mode_config_funcs = {
@@ -642,6 +716,17 @@ index 00000000..44009bf9
 +					   NULL, &ocfb->connector);
 +	if (ret)
 +		return ret;
++
++	/*
++	 * With a vsync IRQ wired we deliver real vblank events and
++	 * vblank-synchronised page flips; without one the atomic helper falls
++	 * back to immediate flip completion (no_vblank).
++	 */
++	if (ocfb->irq > 0) {
++		ret = drm_vblank_init(drm, 1);
++		if (ret)
++			return ret;
++	}
 +
 +	drm_mode_config_reset(drm);
 +
@@ -698,9 +783,26 @@ index 00000000..44009bf9
 +	ocfb->big_endian = of_device_is_big_endian(dev->of_node);
 +	ocfb_wr(ocfb, OCFB_CTRL, 0);	/* keep video disabled until modeset */
 +
++	/*
++	 * Optional vsync interrupt. Without it the driver still works; page
++	 * flips just complete immediately instead of at vblank.
++	 */
++	ocfb->irq = platform_get_irq_optional(pdev, 0);
++	if (ocfb->irq == -ENXIO)
++		ocfb->irq = 0;
++	else if (ocfb->irq < 0)
++		return dev_err_probe(dev, ocfb->irq, "failed to get interrupt\n");
++
 +	ret = ocfb_modeset_init(ocfb);
 +	if (ret)
 +		return dev_err_probe(dev, ret, "failed to init modeset\n");
++
++	if (ocfb->irq > 0) {
++		ret = devm_request_irq(dev, ocfb->irq, ocfb_irq_handler, 0,
++				       "ocfb-drm", ocfb);
++		if (ret)
++			return dev_err_probe(dev, ret, "failed to request interrupt\n");
++	}
 +
 +	ret = drm_dev_register(drm, 0);
 +	if (ret)

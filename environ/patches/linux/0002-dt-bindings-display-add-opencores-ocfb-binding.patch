@@ -1,7 +1,7 @@
-From 7aa6fc5414f061fee5f3cc848e06e629ff05863a Mon Sep 17 00:00:00 2001
+From 8cf14eafb7d9433352f18f6327faf5c2a9ccec09 Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
-Subject: [PATCH 2/2] dt-bindings: display: add opencores,ocfb binding
+Subject: [PATCH 2/5] dt-bindings: display: add opencores,ocfb binding
 
 Binding for the OpenCores VGA/LCD 2.0 core and register-compatible
 derivatives: the control/status register window, an optional scanout
@@ -13,16 +13,16 @@ binding is not tied to any one PLL macro.
 
 Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
- .../bindings/display/opencores,ocfb.yaml      | 151 ++++++++++++++++++
- 1 file changed, 151 insertions(+)
+ .../bindings/display/opencores,ocfb.yaml      | 158 ++++++++++++++++++
+ 1 file changed, 158 insertions(+)
  create mode 100644 Documentation/devicetree/bindings/display/opencores,ocfb.yaml
 
 diff --git a/Documentation/devicetree/bindings/display/opencores,ocfb.yaml b/Documentation/devicetree/bindings/display/opencores,ocfb.yaml
 new file mode 100644
-index 00000000..e044e3c0
+index 00000000..62a0866d
 --- /dev/null
 +++ b/Documentation/devicetree/bindings/display/opencores,ocfb.yaml
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,158 @@
 +# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 +%YAML 1.2
 +---
@@ -48,6 +48,13 @@ index 00000000..e044e3c0
 +  reg:
 +    maxItems: 1
 +    description: control and status registers
++
++  interrupts:
++    maxItems: 1
++    description: >
++      Per-frame vsync interrupt, raised at start-of-vblank. Optional; with it
++      the driver delivers vblank events and vblank-synchronised page flips,
++      otherwise page flips complete immediately.
 +
 +  clocks:
 +    maxItems: 1

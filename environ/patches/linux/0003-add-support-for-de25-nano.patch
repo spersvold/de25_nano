@@ -1,7 +1,7 @@
-From 78b26f5285ceeb167d5f82216987957680adb688 Mon Sep 17 00:00:00 2001
+From e8a41794582c660b410f10492de987127c555a86 Mon Sep 17 00:00:00 2001
 From: terasic_will <btdai@terasic.com.cn>
 Date: Fri, 27 Jun 2025 09:42:18 +0800
-Subject: [PATCH] add support for de25-nano
+Subject: [PATCH 3/5] add support for de25-nano
 
 ---
  arch/arm64/boot/dts/intel/Makefile            |     1 +

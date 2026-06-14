@@ -1,8 +1,8 @@
-From b51fe8fc54af06732ebfafe86a4e1aafa21111b7 Mon Sep 17 00:00:00 2001
+From f600314aaad5277a5270ed0bd23ea8e85b15b64c Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 12:00:00 +0200
-Subject: [PATCH] arm64: dts: socfpga: agilex5-de25-nano: wire SD/MMC voltage
- regulators
+Subject: [PATCH 4/5] arm64: dts: socfpga: agilex5-de25-nano: wire SD/MMC
+ voltage regulators
 
 When forward-ported to QPDS26.1 (6.18) the Agilex5 base SoC dtsi gained
 SD/eMMC voltage regulators (sd_emmc_power, sd_io_1v8_reg) and switched
@@ -29,10 +29,10 @@ Signed-off-by: Steffen Persvold <spersvold@gmail.com>
  1 file changed, 13 insertions(+), 40 deletions(-)
 
 diff --git a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
-index b0990578..cbcb5a78 100644
+index 10edc717..e1acbfc7 100644
 --- a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
 +++ b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
-@@ -143,50 +143,23 @@ emac0_phy0: ethernet-phy@0 {
+@@ -61,50 +61,23 @@ emac0_phy0: ethernet-phy@0 {
  
  &mmc {
  	status = "okay";
