@@ -70,7 +70,16 @@ $(ARM_FW_IMG):
 .PHONY: u-boot
 u-boot: u-boot-socfpga/u-boot.itb workspace/boot.scr.uimg
 
-u-boot-socfpga/u-boot.itb: $(ARM_FW_IMG)
+UBOOT_PATCHES := $(wildcard patches/u-boot/*.patch)
+workspace/uboot.patch: $(UBOOT_PATCHES)
+	mkdir -p workspace && rm -f $@
+	$(foreach  p,$(UBOOT_PATCHES), cat $(p) >>$@;)
+
+workspace/patch-uboot-done: workspace/uboot.patch Makefile
+	if [ -s workspace/uboot.patch ] ; then cd u-boot-socfpga && ( git apply -R --check ../workspace/uboot.patch 2>/dev/null || git apply ../workspace/uboot.patch ) ; fi
+	mkdir -p workspace && touch workspace/patch-uboot-done
+
+u-boot-socfpga/u-boot.itb: $(ARM_FW_IMG) workspace/patch-uboot-done
 	ln -sf $$(realpath $(ARM_FW_IMG)) u-boot-socfpga/bl31.bin
 	make -C u-boot-socfpga CROSS_COMPILE=$(CROSS_COMPILE_LINUX) socfpga_agilex5_de25_nano_defconfig
 	make -j$(NPROC) -C u-boot-socfpga CROSS_COMPILE=$(CROSS_COMPILE_LINUX)

@@ -1,0 +1,673 @@
+From 3e4cad9be245555aec99387169b5f1d40a4b7059 Mon Sep 17 00:00:00 2001
+From: terasic_will <btdai@terasic.com.cn>
+Date: Fri, 27 Jun 2025 09:40:35 +0800
+Subject: [PATCH 1/2] add support for de25-nano
+
+---
+ arch/arm/dts/Makefile                         |   1 +
+ .../dts/socfpga_agilex5_de25_nano-u-boot.dtsi | 178 ++++++++++++++++
+ arch/arm/dts/socfpga_agilex5_de25_nano.dts    | 190 ++++++++++++++++++
+ arch/arm/mach-socfpga/Kconfig                 |   7 +
+ board/terasic/agilex5-de25-nano/MAINTAINERS   |   8 +
+ configs/socfpga_agilex5_de25_nano_defconfig   | 167 +++++++++++++++
+ drivers/ddr/altera/sdram_agilex5.c            |   3 +-
+ include/configs/socfpga_agilex5_de25_nano.h   |  12 ++
+ 8 files changed, 565 insertions(+), 1 deletion(-)
+ create mode 100644 arch/arm/dts/socfpga_agilex5_de25_nano-u-boot.dtsi
+ create mode 100644 arch/arm/dts/socfpga_agilex5_de25_nano.dts
+ create mode 100644 board/terasic/agilex5-de25-nano/MAINTAINERS
+ create mode 100644 configs/socfpga_agilex5_de25_nano_defconfig
+ create mode 100644 include/configs/socfpga_agilex5_de25_nano.h
+
+diff --git a/arch/arm/dts/Makefile b/arch/arm/dts/Makefile
+index dae02013..89c6d565 100644
+--- a/arch/arm/dts/Makefile
++++ b/arch/arm/dts/Makefile
+@@ -459,6 +459,7 @@ dtb-$(CONFIG_ARCH_SOCFPGA) +=				\
+ 	socfpga_agilex5_socdk_emmc.dtb			\
+ 	socfpga_agilex5_socdk_nand2.dtb			\
+ 	socfpga_agilex5_emu.dtb				\
++	socfpga_agilex5_de25_nano.dtb			\
+ 	socfpga_arria5_secu1.dtb			\
+ 	socfpga_arria5_socdk.dtb			\
+ 	socfpga_arria10_chameleonv3_270_2.dtb		\
+diff --git a/arch/arm/dts/socfpga_agilex5_de25_nano-u-boot.dtsi b/arch/arm/dts/socfpga_agilex5_de25_nano-u-boot.dtsi
+new file mode 100644
+index 00000000..db3872a6
+--- /dev/null
++++ b/arch/arm/dts/socfpga_agilex5_de25_nano-u-boot.dtsi
+@@ -0,0 +1,178 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * U-Boot additions
++ *
++ * Copyright (C) 2024 Intel Corporation <www.intel.com>
++ */
++
++#include "socfpga_agilex5-u-boot.dtsi"
++
++/{
++	aliases {
++		spi0 = &qspi;
++		freeze_br0 = &freeze_controller;
++	};
++
++	soc {
++		freeze_controller: freeze_controller@0x20000450 {
++			compatible = "altr,freeze-bridge-controller";
++			reg = <0x20000450 0x00000010>;
++			status = "disabled";
++		};
++	};
++
++	/*
++	 * Both Memory base address and size default info is retrieved from HW setting.
++	 * Reconfiguration / Overwrite these info can be done with examples below.
++	 */
++
++	/*
++	 * Example for memory size with 2GB:
++	 * memory {
++	 *	reg = <0x0 0x80000000 0x0 0x80000000>;
++	 * };
++	 */
++
++	/*
++	 * Example for memory size with 8GB:
++	 * memory {
++	 *	reg = <0x0 0x80000000 0x0 0x80000000>,
++	 *	      <0x8 0x80000000 0x1 0x80000000>;
++	 * };
++	 */
++
++	/*
++	 * Example for memory size with 32GB:
++	 * memory {
++	 *	reg = <0x0 0x80000000 0x0 0x80000000>,
++	 *	      <0x8 0x80000000 0x7 0x80000000>;
++	 * };
++	 */
++
++	/*
++	 * Example for memory size with 512GB:
++	 * memory {
++	 *	reg = <0x0 0x80000000 0x0 0x80000000>,
++	 *	      <0x8 0x80000000 0x7 0x80000000>,
++	 *	      <0x88 0x00000000 0x78 0x00000000>;
++	 * };
++	 */
++	memory {
++    /* 1GB */
++		reg = <0 0x80000000 0 0x40000000>;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++		u-boot,spl-boot-order = &mmc,&flash0,&nand,"/memory";
++	};
++};
++
++&flash0 {
++	compatible = "jedec,spi-nor";
++	spi-tx-bus-width = <4>;
++	spi-rx-bus-width = <4>;
++	bootph-all;
++	/delete-property/ cdns,read-delay;
++};
++
++&flash1 {
++	bootph-all;
++};
++
++&i3c0 {
++	bootph-all;
++};
++
++&i3c1 {
++	bootph-all;
++};
++
++&mmc {
++	status = "okay";
++	bus-width = <4>;
++	sd-uhs-sdr50;
++	cap-mmc-highspeed;
++	bootph-all;
++};
++
++&combophy0 {
++	status = "okay";
++	bootph-all;
++	cdns,phy-use-ext-lpbk-dqs = <1>;
++	cdns,phy-use-lpbk-dqs = <1>;
++	cdns,phy-use-phony-dqs = <1>;
++	cdns,phy-use-phony-dqs-cmd = <1>;
++	cdns,phy-io-mask-always-on = <0>;
++	cdns,phy-io-mask-end = <5>;
++	cdns,phy-io-mask-start = <0>;
++	cdns,phy-data-select-oe-end = <1>;
++	cdns,phy-sync-method = <1>;
++	cdns,phy-sw-half-cycle-shift = <0>;
++	cdns,phy-rd-del-sel = <52>;
++	cdns,phy-underrun-suppress = <1>;
++	cdns,phy-gate-cfg-always-on = <1>;
++	cdns,phy-param-dll-bypass-mode = <1>;
++	cdns,phy-param-phase-detect-sel = <2>;
++	cdns,phy-param-dll-start-point = <254>;
++	cdns,phy-read-dqs-cmd-delay = <0>;
++	cdns,phy-clk-wrdqs-delay = <0>;
++	cdns,phy-clk-wr-delay = <0>;
++	cdns,phy-read-dqs-delay = <0>;
++	cdns,phy-phony-dqs-timing = <0>;
++	cdns,hrs09-rddata-en = <1>;
++	cdns,hrs09-rdcmd-en = <1>;
++	cdns,hrs09-extended-wr-mode = <1>;
++	cdns,hrs09-extended-rd-mode = <1>;
++	cdns,hrs10-hcsdclkadj = <3>;
++	cdns,hrs16-wrdata1-sdclk-dly = <0>;
++	cdns,hrs16-wrdata0-sdclk-dly = <0>;
++	cdns,hrs16-wrcmd1-sdclk-dly = <0>;
++	cdns,hrs16-wrcmd0-sdclk-dly = <0>;
++	cdns,hrs16-wrdata1-dly = <0>;
++	cdns,hrs16-wrdata0-dly = <0>;
++	cdns,hrs16-wrcmd1-dly = <0>;
++	cdns,hrs16-wrcmd0-dly = <0>;
++	cdns,hrs07-rw-compensate = <10>;
++	cdns,hrs07-idelay-val = <0>;
++};
++
++&qspi {
++	status = "disabled";
++};
++
++&nand {
++	bootph-all;
++};
++
++&timer0 {
++	bootph-all;
++};
++
++&timer1 {
++	bootph-all;
++};
++
++&timer2 {
++	bootph-all;
++};
++
++&timer3 {
++	bootph-all;
++};
++
++&watchdog0 {
++	bootph-all;
++};
++
++#if !defined(CONFIG_SOCFPGA_SECURE_VAB_AUTH)
++&fdt_0_blob {
++	filename = "arch/arm/dts/socfpga_agilex5_de25_nano.dtb";
++};
++
++/* To add NAND dtb when ready in future */
++
++&binman {
++	/delete-node/ kernel;
++};
++#endif
+diff --git a/arch/arm/dts/socfpga_agilex5_de25_nano.dts b/arch/arm/dts/socfpga_agilex5_de25_nano.dts
+new file mode 100644
+index 00000000..2aae6dda
+--- /dev/null
++++ b/arch/arm/dts/socfpga_agilex5_de25_nano.dts
+@@ -0,0 +1,190 @@
++// SPDX-License-Identifier:     GPL-2.0
++/*
++ * Copyright (C) 2024 Intel Corporation <www.intel.com>
++ */
++#include "socfpga_agilex5.dtsi"
++
++/ {
++	model = "SoCFPGA Agilex5 Terasic DE25-Nano";
++
++	aliases {
++		serial0 = &uart1;
++		ethernet0 = &gmac0;
++	};
++
++	leds {
++		compatible = "gpio-leds";
++		hps0 {
++			label = "hps_led0";
++			gpios = <&portb 17 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	memory {
++		device_type = "memory";
++		/* We expect the bootloader to fill in the reg */
++		reg = <0 0 0 0>;
++	};
++
++	soc {
++		clocks {
++			osc1 {
++				clock-frequency = <25000000>;
++			};
++		};
++	};
++};
++
++&gpio1 {
++	status = "okay";
++};
++
++&i2c1 {
++	status = "okay";
++};
++
++&mmc {
++	status = "okay";
++};
++
++&combophy0 {
++	status = "okay";
++};
++
++&uart1 {
++	status = "okay";
++	bootph-all;
++};
++
++&usbphy0 {
++	status = "okay";
++};
++
++&usb0 {
++	status = "okay";
++	disable-over-current;
++};
++
++&watchdog0 {
++	status = "okay";
++};
++
++&watchdog1 {
++	status = "okay";
++};
++
++&watchdog2 {
++	status = "okay";
++};
++
++&watchdog3 {
++	status = "okay";
++};
++
++&watchdog4 {
++	status = "okay";
++};
++
++&timer0 {
++	status = "okay";
++};
++
++&timer1 {
++	status = "okay";
++};
++
++&timer2 {
++	status = "okay";
++};
++
++&timer3 {
++	status = "okay";
++};
++
++&nand {
++	status = "disabled";
++
++	flash1: flash@0 {
++		reg = <0>;
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		partition@0 {
++			label = "u-boot";
++			reg = <0 0x200000>;
++		};
++		partition@200000 {
++			label = "root";
++			reg = <0x200000 0x3fe00000>;
++		};
++	};
++};
++
++&qspi {
++	flash0: flash@0 {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		compatible = "mt25qu02g";
++		reg = <0>;
++		spi-max-frequency = <100000000>;
++
++		m25p,fast-read;
++		cdns,page-size = <256>;
++		cdns,block-size = <16>;
++		cdns,read-delay = <1>;
++		cdns,tshsl-ns = <50>;
++		cdns,tsd2d-ns = <50>;
++		cdns,tchsh-ns = <4>;
++		cdns,tslch-ns = <4>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			qspi_boot: partition@0 {
++				label = "u-boot";
++				reg = <0x0 0x04200000>;
++			};
++
++			root: partition@4200000 {
++				label = "root";
++				reg = <0x04200000 0x0BE00000>;
++			};
++		};
++	};
++};
++
++&gmac0 {
++	status = "okay";
++	phy-mode = "rgmii";
++	phy-handle = <&emac0_phy0>;
++
++	max-frame-size = <9000>;
++
++	mdio0 {
++		#address-cells = <1>;
++		#size-cells = <0>;
++		compatible = "snps,dwxgmac-mdio";
++		emac0_phy0: ethernet-phy@0 {
++			reg = <1>;
++		};
++	};
++};
++
++&gmac2 {
++	status = "disabled";
++	phy-mode = "rgmii";
++	phy-handle = <&emac2_phy0>;
++
++	max-frame-size = <9000>;
++
++	mdio0 {
++		#address-cells = <1>;
++		#size-cells = <0>;
++		compatible = "snps,dwxgmac-mdio";
++		emac2_phy0: ethernet-phy@0 {
++			reg = <0>;
++		};
++	};
++};
+diff --git a/arch/arm/mach-socfpga/Kconfig b/arch/arm/mach-socfpga/Kconfig
+index 73c98891..c0f69304 100644
+--- a/arch/arm/mach-socfpga/Kconfig
++++ b/arch/arm/mach-socfpga/Kconfig
+@@ -304,6 +304,10 @@ config TARGET_SOCFPGA_TERASIC_DE1_SOC
+ config TARGET_SOCFPGA_TERASIC_SOCKIT
+ 	bool "Terasic SoCkit (Cyclone V)"
+ 	select TARGET_SOCFPGA_CYCLONE5
++	
++config TARGET_SOCFPGA_AGILEX5_DE25_NANO
++    bool "Terasic DE25-Nano (Agilex5)" 
++    select TARGET_SOCFPGA_AGILEX5  
+ 
+ endchoice
+ 
+@@ -330,6 +334,7 @@ config SYS_BOARD
+ 	default "sr1500" if TARGET_SOCFPGA_SR1500
+ 	default "stratix10-socdk" if TARGET_SOCFPGA_STRATIX10_SOCDK
+ 	default "vining_fpga" if TARGET_SOCFPGA_SOFTING_VINING_FPGA
++	default "agilex5-de25-nano" if TARGET_SOCFPGA_AGILEX5_DE25_NANO
+ 
+ config SYS_VENDOR
+ 	default "intel" if TARGET_SOCFPGA_AGILEX7M_SOCDK
+@@ -352,6 +357,7 @@ config SYS_VENDOR
+ 	default "terasic" if TARGET_SOCFPGA_TERASIC_DE10_NANO
+ 	default "terasic" if TARGET_SOCFPGA_TERASIC_DE10_STANDARD
+ 	default "terasic" if TARGET_SOCFPGA_TERASIC_SOCKIT
++	default "terasic" if TARGET_SOCFPGA_AGILEX5_DE25_NANO
+ 
+ config SYS_SOC
+ 	default "socfpga"
+@@ -379,5 +385,6 @@ config SYS_CONFIG_NAME
+ 	default "socfpga_sr1500" if TARGET_SOCFPGA_SR1500
+ 	default "socfpga_stratix10_socdk" if TARGET_SOCFPGA_STRATIX10_SOCDK
+ 	default "socfpga_vining_fpga" if TARGET_SOCFPGA_SOFTING_VINING_FPGA
++	default "socfpga_agilex5_de25_nano" if TARGET_SOCFPGA_AGILEX5_DE25_NANO
+ 
+ endif
+diff --git a/board/terasic/agilex5-de25-nano/MAINTAINERS b/board/terasic/agilex5-de25-nano/MAINTAINERS
+new file mode 100644
+index 00000000..d93a3ec2
+--- /dev/null
++++ b/board/terasic/agilex5-de25-nano/MAINTAINERS
+@@ -0,0 +1,8 @@
++SOCFPGA BOARD
++M:	Tien Fong Chee <tien.fong.chee@intel.com>
++M:	Teik Heng Chong <teik.heng.chong@intel.com>
++M:	Jit Loon Lim <jit.loon.lim@intel.com>
++S:	Maintained
++F:	board/terasic/agilex5-de25-nano/
++F:	include/configs/socfpga_agilex5_de25_nano.h
++F:	configs/socfpga_agilex5_de25_nano_defconfig
+diff --git a/configs/socfpga_agilex5_de25_nano_defconfig b/configs/socfpga_agilex5_de25_nano_defconfig
+new file mode 100644
+index 00000000..3e9679cd
+--- /dev/null
++++ b/configs/socfpga_agilex5_de25_nano_defconfig
+@@ -0,0 +1,167 @@
++CONFIG_ARM=y
++CONFIG_ARCH_SOCFPGA=y
++CONFIG_TEXT_BASE=0x80200000
++CONFIG_NR_DRAM_BANKS=3
++CONFIG_SPL_LDSCRIPT="arch/arm/mach-socfpga/u-boot-spl-soc64.lds"
++CONFIG_HAS_CUSTOM_SYS_INIT_SP_ADDR=y
++CONFIG_CUSTOM_SYS_INIT_SP_ADDR=0x80300000
++CONFIG_SF_DEFAULT_MODE=0x2003
++CONFIG_ENV_SIZE=0x2000
++CONFIG_DM_GPIO=y
++CONFIG_GPIO_HOG=y
++CONFIG_SPL_GPIO=y
++CONFIG_SPL_GPIO_HOG=y
++CONFIG_DEFAULT_DEVICE_TREE="socfpga_agilex5_de25_nano"
++CONFIG_SPL_MMC=y
++CONFIG_DM_RESET=y
++CONFIG_SPL_STACK=0x71000
++CONFIG_SPL_SYS_MALLOC=y
++CONFIG_SPL_HAS_CUSTOM_MALLOC_START=y
++CONFIG_SPL_CUSTOM_SYS_MALLOC_ADDR=0xbfa00000
++CONFIG_SPL_SYS_MALLOC_SIZE=0x500000
++CONFIG_SPL_HAS_BSS_LINKER_SECTION=y
++CONFIG_SPL_BSS_START_ADDR=0xbff00000
++CONFIG_SPL_BSS_MAX_SIZE=0x100000
++CONFIG_SYS_LOAD_ADDR=0x82000000
++CONFIG_TARGET_SOCFPGA_AGILEX5_SIMICS=y
++CONFIG_TARGET_SOCFPGA_AGILEX5_DE25_NANO=y
++CONFIG_IDENT_STRING="socfpga_agilex5"
++CONFIG_SPL_FS_FAT=y
++# CONFIG_EFI_LOADER is not set
++CONFIG_MTD_RAW_NAND=y
++CONFIG_NAND_CADENCE=y
++CONFIG_SYS_NAND_ONFI_DETECTION=y
++CONFIG_SYS_NAND_BLOCK_SIZE=0x20000
++CONFIG_SYS_NAND_PAGE_SIZE=0x800
++CONFIG_SPL_NAND_SUPPORT=y
++CONFIG_SPL_NAND_FRAMEWORK=y
++CONFIG_SPL_NAND_CADENCE=y
++CONFIG_FIT=y
++CONFIG_SPL_FIT_SIGNATURE=y
++CONFIG_SPL_LOAD_FIT=y
++CONFIG_SPL_LOAD_FIT_ADDRESS=0x82000000
++CONFIG_LEGACY_IMAGE_FORMAT=y
++CONFIG_DISTRO_DEFAULTS=y
++CONFIG_QSPI_BOOT=y
++CONFIG_BOOTDELAY=5
++CONFIG_USE_BOOTARGS=y
++CONFIG_BOOTARGS="console=ttyS0,115200 initrd=0x90000000 root=/dev/ram0 rw init=/sbin/init ramdisk_size=10000000 earlycon panic=-1 nosmp kvm-arm.mode=nvhe"
++CONFIG_SPL_MAX_SIZE=0x40000
++# CONFIG_SPL_RAW_IMAGE_SUPPORT is not set
++# CONFIG_SPL_SHARES_INIT_SP_ADDR is not set
++CONFIG_SPL_CACHE=y
++CONFIG_SPL_SPI_FLASH_MTD=y
++CONFIG_SPL_SPI_LOAD=y
++CONFIG_SYS_SPI_U_BOOT_OFFS=0x04000000
++CONFIG_SPL_ATF=y
++CONFIG_SPL_ATF_NO_PLATFORM_PARAM=y
++CONFIG_SYS_PROMPT="SOCFPGA_AGILEX5 # "
++CONFIG_SYS_MAXARGS=32
++CONFIG_CMD_NVEDIT_SELECT=y
++CONFIG_CMD_MEMTEST=y
++CONFIG_CMD_GPIO=y
++CONFIG_CMD_I2C=y
++CONFIG_CMD_MMC=y
++CONFIG_PHY=y
++CONFIG_SPL_PHY=y
++CONFIG_NOP_PHY=y
++CONFIG_SPL_NOP_PHY=y
++CONFIG_PHY_CADENCE_COMBOPHY=y
++CONFIG_SPL_PHY_CADENCE_COMBOPHY=y
++CONFIG_MMC=y
++CONFIG_MMC_WRITE=y
++# CONFIG_MMC_BROKEN_CD is not set
++CONFIG_DM_MMC=y
++CONFIG_SPL_DM_MMC=y
++CONFIG_MMC_SDHCI_ADMA_HELPERS=y
++# CONFIG_ARM_PL180_MMCI is not set
++CONFIG_MMC_QUIRKS=y
++CONFIG_SYS_MMC_MAX_BLK_COUNT=65535
++CONFIG_MMC_HW_PARTITIONING=y
++# CONFIG_SUPPORT_EMMC_RPMB is not set
++# CONFIG_SUPPORT_EMMC_BOOT is not set
++# CONFIG_MMC_IO_VOLTAGE is not set
++# CONFIG_MMC_HS400_ES_SUPPORT is not set
++# CONFIG_MMC_HS400_SUPPORT is not set
++# CONFIG_MMC_HS200_SUPPORT is not set
++CONFIG_MMC_VERBOSE=n
++CONFIG_MMC_TRACE=n
++CONFIG_MMC_DW=y
++# CONFIG_MMC_MXC is not set
++# CONFIG_MMC_PCI is not set
++# CONFIG_MMC_OMAP_HS is not set
++CONFIG_MMC_SDHCI=y
++# CONFIG_MMC_SDHCI_SDMA is not set
++CONFIG_MMC_SDHCI_ADMA=y
++CONFIG_SPL_MMC_SDHCI_ADMA=y
++# CONFIG_MMC_SDHCI_BCMSTB is not set
++CONFIG_MMC_SDHCI_CADENCE=y
++CONFIG_CMD_FAT=y
++CONFIG_CMD_MTD=y
++CONFIG_SPL_SYS_DCACHE_OFF=y
++CONFIG_CMD_SPI=y
++CONFIG_CMD_USB=y
++CONFIG_CMD_WDT=y
++CONFIG_CMD_CACHE=y
++CONFIG_CMD_TIMER=y
++CONFIG_MTDIDS_DEFAULT="nand0=10b80000.nand.0"
++CONFIG_MTDPARTS_DEFAULT="mtdparts=10b80000.nand.0:2m(u-boot),-(root)"
++CONFIG_CMD_UBI=y
++# CONFIG_ISO_PARTITION is not set
++# CONFIG_EFI_PARTITION is not set
++CONFIG_OF_LIST=""
++CONFIG_ENV_IS_IN_FAT=y
++CONFIG_ENV_FAT_DEVICE_AND_PART="0:1"
++CONFIG_ENV_IS_IN_UBI=y
++CONFIG_ENV_UBI_PART="root"
++CONFIG_ENV_UBI_VOLUME="env"
++CONFIG_SYS_RELOC_GD_ENV_ADDR=y
++CONFIG_USE_BOOTFILE=y
++CONFIG_BOOTFILE="kernel.itb"
++CONFIG_NET_RANDOM_ETHADDR=y
++CONFIG_SPL_DM_SEQ_ALIAS=y
++CONFIG_SPL_ALTERA_SDRAM=y
++CONFIG_DWAPB_GPIO=y
++CONFIG_DM_I2C=y
++CONFIG_SYS_I2C_DW=y
++CONFIG_MISC=y
++CONFIG_MISC_INIT_R=y
++CONFIG_DM_MTD=y
++CONFIG_SYS_NAND_U_BOOT_LOCATIONS=y
++CONFIG_SYS_NAND_U_BOOT_OFFS=0x0
++CONFIG_SYS_NAND_U_BOOT_OFFS_REDUND=0x100000
++CONFIG_SPI_FLASH_SPANSION=y
++CONFIG_SPI_FLASH_STMICRO=y
++CONFIG_PHY_MARVELL=y
++CONFIG_DWC_ETH_XGMAC=y
++# CONFIG_SPI_FLASH_USE_4K_SECTORS is not set
++CONFIG_CMD_NAND_TRIMFFS=y
++CONFIG_CMD_NAND_LOCK_UNLOCK=y
++CONFIG_SPI_FLASH_MTD=y
++CONFIG_SPL_MTD=y
++CONFIG_RGMII=y
++CONFIG_SYS_NS16550_MEM32=y
++CONFIG_SPI=y
++CONFIG_CADENCE_QSPI=y
++CONFIG_DESIGNWARE_SPI=y
++CONFIG_TIMER=y
++CONFIG_DESIGNWARE_APB_TIMER=y
++CONFIG_USB=y
++CONFIG_USB_XHCI_HCD=y
++CONFIG_USB_XHCI_DWC3=y
++CONFIG_USB_DWC2=y
++CONFIG_USB_DWC3=y
++CONFIG_USB_HUB_DEBOUNCE_TIMEOUT=3000
++# CONFIG_WATCHDOG_AUTOSTART is not set
++CONFIG_DESIGNWARE_WATCHDOG=y
++CONFIG_WDT=y
++# CONFIG_SPL_USE_TINY_PRINTF is not set
++CONFIG_PANIC_HANG=y
++CONFIG_SPL_CRC32=y
++CONFIG_BLOBLIST=y
++CONFIG_BLOBLIST_SIZE=0x1000
++CONFIG_BLOBLIST_ADDR=0x72000
++CONFIG_HANDOFF=y
++CONFIG_I3C=y
++CONFIG_DW_I3C_MASTER=y
++CONFIG_CMD_I3C=y
+diff --git a/drivers/ddr/altera/sdram_agilex5.c b/drivers/ddr/altera/sdram_agilex5.c
+index ee66c721..7bd51975 100644
+--- a/drivers/ddr/altera/sdram_agilex5.c
++++ b/drivers/ddr/altera/sdram_agilex5.c
+@@ -138,7 +138,8 @@ static void populate_ddr_handoff(struct udevice *dev, struct io96b_info *io96b_c
+ 	socfpga_handoff_read((void *)SOC64_HANDOFF_SDRAM, handoff_table, len);
+ 
+ 	/* Read handoff - dual port */
+-	plat->dualport = FIELD_GET(IO96B0_DUAL_PORT_MASK, handoff_table[PORT_EMIF_CONFIG_OFFSET]);
++	//plat->dualport = FIELD_GET(IO96B0_DUAL_PORT_MASK, handoff_table[PORT_EMIF_CONFIG_OFFSET]);
++	plat->dualport = 0;
+ 	debug("%s: dualport from handoff: 0x%x\n", __func__, plat->dualport);
+ 
+ 	if (plat->dualport)
+diff --git a/include/configs/socfpga_agilex5_de25_nano.h b/include/configs/socfpga_agilex5_de25_nano.h
+new file mode 100644
+index 00000000..b5b5bd76
+--- /dev/null
++++ b/include/configs/socfpga_agilex5_de25_nano.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: GPL-2.0
++ *
++ * Copyright (C) 2024 Intel Corporation <www.intel.com>
++ *
++ */
++
++#ifndef __CONFIG_SOCFGPA_AGILEX5_H__
++#define __CONFIG_SOCFGPA_AGILEX5_H__
++
++#include <configs/socfpga_soc64_common.h>
++
++#endif	/* __CONFIG_SOCFGPA_AGILEX5_H__ */
+-- 
+2.40.1
+

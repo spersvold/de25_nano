@@ -1,0 +1,378 @@
+From 1ba52e2c6f29ae90ef492ea3afca82e1b598c328 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Sun, 14 Jun 2026 18:41:40 +0200
+Subject: [PATCH 2/2] board: socfpga: forward-port Terasic DE25-Nano to u-boot
+ 2026.01
+
+Adapt the DE25-Nano board support (added for the Terasic 2025.01 tree
+in the preceding patch) to the Altera QPDS26.1 / u-boot 2026.01 base:
+
+  - rework configs/socfpga_agilex5_de25_nano_defconfig for 2026.01
+  - update the board DTS and -u-boot.dtsi (incl. MMC / Cadence SD-PHY)
+  - add board/terasic/agilex5-de25-nano/{socfpga.c,Makefile} with
+    board_early_init_f() -> socfpga_get_sys_mgr_addr(), enable
+    CONFIG_BOARD_EARLY_INIT_F=y
+  - drop the obsolete CONFIG_SPL_LDSCRIPT override so the SPL uses the
+    generic armv8 ldscript (like the SoCDK)
+
+System-manager base: 2026.01 moved socfpga_sysmgr_base init out of the
+shared arch path (socfpga_get_managers_addr() now skips Agilex5) into
+board_early_init_f(). Without it the base is 0 in u-boot proper, so
+is_fpga_config_ready() and the GMAC PHY setup read the wrong registers
+("FPGA not ready", no ethernet PHY).
+
+Warm reset: the board carried a custom SPL ldscript from the 2025.01
+tree (CONFIG_SPL_LDSCRIPT=...u-boot-spl-soc64.lds) that lacks the
+.data_save section the generic armv8 ldscript provides. With
+CONFIG_SPL_RECOVER_DATA_SECTION=y, spl_save_restore_data() therefore ran
+with a zero-size region and never restored .data on the warm re-run of
+the SPL, so "reboot" hung. The SoCDK dropped the custom ldscript in
+2026; do the same here (BSS still lands in DDR via CONFIG_SPL_SEPARATE_BSS).
+
+Boots Linux on the new stack; bridge enable and ethernet work in u-boot.
+---
+ .../dts/socfpga_agilex5_de25_nano-u-boot.dtsi |  60 +++-----
+ arch/arm/dts/socfpga_agilex5_de25_nano.dts    |  10 +-
+ board/terasic/agilex5-de25-nano/Makefile      |   7 +
+ board/terasic/agilex5-de25-nano/socfpga.c     |  12 ++
+ configs/socfpga_agilex5_de25_nano_defconfig   | 128 ++++++++----------
+ 5 files changed, 96 insertions(+), 121 deletions(-)
+ create mode 100644 board/terasic/agilex5-de25-nano/Makefile
+ create mode 100644 board/terasic/agilex5-de25-nano/socfpga.c
+
+diff --git a/arch/arm/dts/socfpga_agilex5_de25_nano-u-boot.dtsi b/arch/arm/dts/socfpga_agilex5_de25_nano-u-boot.dtsi
+index db3872a6..88abe17b 100644
+--- a/arch/arm/dts/socfpga_agilex5_de25_nano-u-boot.dtsi
++++ b/arch/arm/dts/socfpga_agilex5_de25_nano-u-boot.dtsi
+@@ -91,50 +91,26 @@
+ &mmc {
+ 	status = "okay";
+ 	bus-width = <4>;
+-	sd-uhs-sdr50;
+-	cap-mmc-highspeed;
++	cap-sd-highspeed;
++	max-frequency = <200000000>;
++	no-1-8-v;			/* 3.3V SD slot (matches kernel DTS) */
+ 	bootph-all;
+-};
+ 
+-&combophy0 {
+-	status = "okay";
+-	bootph-all;
+-	cdns,phy-use-ext-lpbk-dqs = <1>;
+-	cdns,phy-use-lpbk-dqs = <1>;
+-	cdns,phy-use-phony-dqs = <1>;
+-	cdns,phy-use-phony-dqs-cmd = <1>;
+-	cdns,phy-io-mask-always-on = <0>;
+-	cdns,phy-io-mask-end = <5>;
+-	cdns,phy-io-mask-start = <0>;
+-	cdns,phy-data-select-oe-end = <1>;
+-	cdns,phy-sync-method = <1>;
+-	cdns,phy-sw-half-cycle-shift = <0>;
+-	cdns,phy-rd-del-sel = <52>;
+-	cdns,phy-underrun-suppress = <1>;
+-	cdns,phy-gate-cfg-always-on = <1>;
+-	cdns,phy-param-dll-bypass-mode = <1>;
+-	cdns,phy-param-phase-detect-sel = <2>;
+-	cdns,phy-param-dll-start-point = <254>;
+-	cdns,phy-read-dqs-cmd-delay = <0>;
+-	cdns,phy-clk-wrdqs-delay = <0>;
+-	cdns,phy-clk-wr-delay = <0>;
+-	cdns,phy-read-dqs-delay = <0>;
+-	cdns,phy-phony-dqs-timing = <0>;
+-	cdns,hrs09-rddata-en = <1>;
+-	cdns,hrs09-rdcmd-en = <1>;
+-	cdns,hrs09-extended-wr-mode = <1>;
+-	cdns,hrs09-extended-rd-mode = <1>;
+-	cdns,hrs10-hcsdclkadj = <3>;
+-	cdns,hrs16-wrdata1-sdclk-dly = <0>;
+-	cdns,hrs16-wrdata0-sdclk-dly = <0>;
+-	cdns,hrs16-wrcmd1-sdclk-dly = <0>;
+-	cdns,hrs16-wrcmd0-sdclk-dly = <0>;
+-	cdns,hrs16-wrdata1-dly = <0>;
+-	cdns,hrs16-wrdata0-dly = <0>;
+-	cdns,hrs16-wrcmd1-dly = <0>;
+-	cdns,hrs16-wrcmd0-dly = <0>;
+-	cdns,hrs07-rw-compensate = <10>;
+-	cdns,hrs07-idelay-val = <0>;
++	/*
++	 * Cadence SDHCI SD-mode PHY tuning (Agilex5 SoC-level; from the socdk
++	 * u-boot dtsi). Required on u-boot 2026.01 -- the driver no longer
++	 * carries built-in defaults, so without these the SD PHY DLL/delays are
++	 * untuned and the card never responds (ACMD41 / "voltage select" timeout).
++	 */
++	cdns,phy-dqs-timing-delay-sd-ds = <0x00780000>;
++	cdns,phy-gate-lpbk-ctrl-delay-sd-ds = <0x81a40040>;
++	cdns,phy-dll-slave-ctrl-sd-ds = <0x00a000fe>;
++	cdns,phy-dq-timing-delay-sd-ds = <0x28000001>;
++	cdns,phy-dqs-timing-delay-sd-hs = <0x780001>;
++	cdns,phy-gate-lpbk-ctrl-delay-sd-hs = <0x81a40040>;
++	cdns,phy-dq-timing-delay-sd-hs = <0x10000001>;
++	cdns,ctrl-hrs16-slave-ctrl-sd-hs = <0x101>;
++	cdns,ctrl-hrs07-timing-delay-sd-hs = <0xA0001>;
+ };
+ 
+ &qspi {
+diff --git a/arch/arm/dts/socfpga_agilex5_de25_nano.dts b/arch/arm/dts/socfpga_agilex5_de25_nano.dts
+index 2aae6dda..6da1dfdd 100644
+--- a/arch/arm/dts/socfpga_agilex5_de25_nano.dts
++++ b/arch/arm/dts/socfpga_agilex5_de25_nano.dts
+@@ -47,12 +47,14 @@
+ 	status = "okay";
+ };
+ 
+-&combophy0 {
+-	status = "okay";
+-};
+-
+ &uart1 {
+ 	status = "okay";
++	/*
++	 * The base SoC dtsi gives this hint to uart0 but not uart1; without it
++	 * u-boot proper's ns16550 driver mis-resolves the L4_SP clock and the
++	 * baud divisor is ~4x off (garbage console). 100 MHz = L4_SP_CLK.
++	 */
++	clock-frequency = <100000000>;
+ 	bootph-all;
+ };
+ 
+diff --git a/board/terasic/agilex5-de25-nano/Makefile b/board/terasic/agilex5-de25-nano/Makefile
+new file mode 100644
+index 00000000..306a8cf5
+--- /dev/null
++++ b/board/terasic/agilex5-de25-nano/Makefile
+@@ -0,0 +1,7 @@
++#
++# Copyright (C) 2025 Altera Corporation <www.altera.com>
++#
++# SPDX-License-Identifier:	GPL-2.0
++#
++
++obj-y	:= socfpga.o
+diff --git a/board/terasic/agilex5-de25-nano/socfpga.c b/board/terasic/agilex5-de25-nano/socfpga.c
+new file mode 100644
+index 00000000..60c8704b
+--- /dev/null
++++ b/board/terasic/agilex5-de25-nano/socfpga.c
+@@ -0,0 +1,12 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2025 Altera Corporation <www.altera.com>
++ */
++
++#include <asm/arch/misc.h>
++
++int board_early_init_f(void)
++{
++	socfpga_get_sys_mgr_addr();
++	return 0;
++}
+diff --git a/configs/socfpga_agilex5_de25_nano_defconfig b/configs/socfpga_agilex5_de25_nano_defconfig
+index 3e9679cd..1671ebbe 100644
+--- a/configs/socfpga_agilex5_de25_nano_defconfig
++++ b/configs/socfpga_agilex5_de25_nano_defconfig
+@@ -1,55 +1,59 @@
+ CONFIG_ARM=y
++CONFIG_SPL_SYS_DCACHE_OFF=y
+ CONFIG_ARCH_SOCFPGA=y
+ CONFIG_TEXT_BASE=0x80200000
++CONFIG_BLOBLIST_SIZE_RELOC=0x20000
++CONFIG_SPL_GPIO=y
+ CONFIG_NR_DRAM_BANKS=3
+-CONFIG_SPL_LDSCRIPT="arch/arm/mach-socfpga/u-boot-spl-soc64.lds"
+ CONFIG_HAS_CUSTOM_SYS_INIT_SP_ADDR=y
+ CONFIG_CUSTOM_SYS_INIT_SP_ADDR=0x80300000
+ CONFIG_SF_DEFAULT_MODE=0x2003
+ CONFIG_ENV_SIZE=0x2000
+ CONFIG_DM_GPIO=y
+-CONFIG_GPIO_HOG=y
+-CONFIG_SPL_GPIO=y
+-CONFIG_SPL_GPIO_HOG=y
+ CONFIG_DEFAULT_DEVICE_TREE="socfpga_agilex5_de25_nano"
+-CONFIG_SPL_MMC=y
+ CONFIG_DM_RESET=y
+-CONFIG_SPL_STACK=0x71000
+-CONFIG_SPL_SYS_MALLOC=y
+-CONFIG_SPL_HAS_CUSTOM_MALLOC_START=y
+-CONFIG_SPL_CUSTOM_SYS_MALLOC_ADDR=0xbfa00000
+-CONFIG_SPL_SYS_MALLOC_SIZE=0x500000
++CONFIG_SPL_STACK=0x6e000
+ CONFIG_SPL_HAS_BSS_LINKER_SECTION=y
+-CONFIG_SPL_BSS_START_ADDR=0xbff00000
++CONFIG_SPL_BSS_START_ADDR=0x9ff00000
+ CONFIG_SPL_BSS_MAX_SIZE=0x100000
+ CONFIG_SYS_LOAD_ADDR=0x82000000
+ CONFIG_TARGET_SOCFPGA_AGILEX5_SIMICS=y
+ CONFIG_TARGET_SOCFPGA_AGILEX5_DE25_NANO=y
+ CONFIG_IDENT_STRING="socfpga_agilex5"
+ CONFIG_SPL_FS_FAT=y
++CONFIG_SPL_RECOVER_DATA_SECTION=y
++CONFIG_DISTRO_DEFAULTS=y
+ # CONFIG_EFI_LOADER is not set
+-CONFIG_MTD_RAW_NAND=y
+-CONFIG_NAND_CADENCE=y
+-CONFIG_SYS_NAND_ONFI_DETECTION=y
+-CONFIG_SYS_NAND_BLOCK_SIZE=0x20000
+-CONFIG_SYS_NAND_PAGE_SIZE=0x800
+-CONFIG_SPL_NAND_SUPPORT=y
+-CONFIG_SPL_NAND_FRAMEWORK=y
+-CONFIG_SPL_NAND_CADENCE=y
+ CONFIG_FIT=y
+ CONFIG_SPL_FIT_SIGNATURE=y
+ CONFIG_SPL_LOAD_FIT=y
+ CONFIG_SPL_LOAD_FIT_ADDRESS=0x82000000
+-CONFIG_LEGACY_IMAGE_FORMAT=y
+-CONFIG_DISTRO_DEFAULTS=y
+ CONFIG_QSPI_BOOT=y
+ CONFIG_BOOTDELAY=5
+ CONFIG_USE_BOOTARGS=y
+ CONFIG_BOOTARGS="console=ttyS0,115200 initrd=0x90000000 root=/dev/ram0 rw init=/sbin/init ramdisk_size=10000000 earlycon panic=-1 nosmp kvm-arm.mode=nvhe"
++CONFIG_SPL_PRE_CONSOLE_BUFFER=y
++CONFIG_SPL_PRE_CON_BUF_SZ=12288
++CONFIG_SPL_PRE_CON_BUF_ADDR=0x6e000
++CONFIG_BOARD_EARLY_INIT_F=y
++CONFIG_MISC_INIT_R=y
++CONFIG_BLOBLIST=y
++CONFIG_BLOBLIST_FIXED=y
++CONFIG_BLOBLIST_ADDR=0x72000
++CONFIG_BLOBLIST_SIZE=0x1000
+ CONFIG_SPL_MAX_SIZE=0x40000
++CONFIG_HANDOFF=y
+ # CONFIG_SPL_RAW_IMAGE_SUPPORT is not set
+ # CONFIG_SPL_SHARES_INIT_SP_ADDR is not set
++CONFIG_SPL_HAVE_INIT_STACK=y
++CONFIG_SPL_SYS_MALLOC=y
++CONFIG_SPL_HAS_CUSTOM_MALLOC_START=y
++CONFIG_SPL_CUSTOM_SYS_MALLOC_ADDR=0x9fa00000
++CONFIG_SPL_SYS_MALLOC_SIZE=0x500000
+ CONFIG_SPL_CACHE=y
++CONFIG_SPL_MTD=y
++CONFIG_SPL_NAND_SUPPORT=y
++CONFIG_SPL_POWER_DOMAIN=y
+ CONFIG_SPL_SPI_FLASH_MTD=y
+ CONFIG_SPL_SPI_LOAD=y
+ CONFIG_SYS_SPI_U_BOOT_OFFS=0x04000000
+@@ -61,44 +65,11 @@ CONFIG_CMD_NVEDIT_SELECT=y
+ CONFIG_CMD_MEMTEST=y
+ CONFIG_CMD_GPIO=y
+ CONFIG_CMD_I2C=y
++CONFIG_CMD_I3C=y
+ CONFIG_CMD_MMC=y
+-CONFIG_PHY=y
+-CONFIG_SPL_PHY=y
+-CONFIG_NOP_PHY=y
+-CONFIG_SPL_NOP_PHY=y
+-CONFIG_PHY_CADENCE_COMBOPHY=y
+-CONFIG_SPL_PHY_CADENCE_COMBOPHY=y
+-CONFIG_MMC=y
+-CONFIG_MMC_WRITE=y
+-# CONFIG_MMC_BROKEN_CD is not set
+-CONFIG_DM_MMC=y
+-CONFIG_SPL_DM_MMC=y
+-CONFIG_MMC_SDHCI_ADMA_HELPERS=y
+-# CONFIG_ARM_PL180_MMCI is not set
+-CONFIG_MMC_QUIRKS=y
+-CONFIG_SYS_MMC_MAX_BLK_COUNT=65535
+-CONFIG_MMC_HW_PARTITIONING=y
+-# CONFIG_SUPPORT_EMMC_RPMB is not set
+-# CONFIG_SUPPORT_EMMC_BOOT is not set
+-# CONFIG_MMC_IO_VOLTAGE is not set
+-# CONFIG_MMC_HS400_ES_SUPPORT is not set
+-# CONFIG_MMC_HS400_SUPPORT is not set
+-# CONFIG_MMC_HS200_SUPPORT is not set
+-CONFIG_MMC_VERBOSE=n
+-CONFIG_MMC_TRACE=n
+-CONFIG_MMC_DW=y
+-# CONFIG_MMC_MXC is not set
+-# CONFIG_MMC_PCI is not set
+-# CONFIG_MMC_OMAP_HS is not set
+-CONFIG_MMC_SDHCI=y
+-# CONFIG_MMC_SDHCI_SDMA is not set
+-CONFIG_MMC_SDHCI_ADMA=y
+-CONFIG_SPL_MMC_SDHCI_ADMA=y
+-# CONFIG_MMC_SDHCI_BCMSTB is not set
+-CONFIG_MMC_SDHCI_CADENCE=y
+-CONFIG_CMD_FAT=y
+ CONFIG_CMD_MTD=y
+-CONFIG_SPL_SYS_DCACHE_OFF=y
++CONFIG_CMD_NAND_TRIMFFS=y
++CONFIG_CMD_NAND_LOCK_UNLOCK=y
+ CONFIG_CMD_SPI=y
+ CONFIG_CMD_USB=y
+ CONFIG_CMD_WDT=y
+@@ -111,35 +82,50 @@ CONFIG_CMD_UBI=y
+ # CONFIG_EFI_PARTITION is not set
+ CONFIG_OF_LIST=""
+ CONFIG_ENV_IS_IN_FAT=y
+-CONFIG_ENV_FAT_DEVICE_AND_PART="0:1"
+ CONFIG_ENV_IS_IN_UBI=y
++CONFIG_ENV_FAT_DEVICE_AND_PART="0:1"
+ CONFIG_ENV_UBI_PART="root"
+ CONFIG_ENV_UBI_VOLUME="env"
+-CONFIG_SYS_RELOC_GD_ENV_ADDR=y
+-CONFIG_USE_BOOTFILE=y
+-CONFIG_BOOTFILE="kernel.itb"
++CONFIG_ENV_RELOC_GD_ENV_ADDR=y
+ CONFIG_NET_RANDOM_ETHADDR=y
+ CONFIG_SPL_DM_SEQ_ALIAS=y
+ CONFIG_SPL_ALTERA_SDRAM=y
++CONFIG_GPIO_HOG=y
++CONFIG_SPL_GPIO_HOG=y
+ CONFIG_DWAPB_GPIO=y
+ CONFIG_DM_I2C=y
+ CONFIG_SYS_I2C_DW=y
++CONFIG_I3C=y
++CONFIG_DW_I3C_MASTER=y
+ CONFIG_MISC=y
+-CONFIG_MISC_INIT_R=y
++# CONFIG_MMC_VERBOSE is not set
++CONFIG_MMC_DW=y
++CONFIG_MMC_SDHCI=y
++CONFIG_MMC_SDHCI_ADMA=y
++CONFIG_SPL_MMC_SDHCI_ADMA=y
++CONFIG_MMC_SDHCI_CADENCE=y
+ CONFIG_DM_MTD=y
++CONFIG_MTD_RAW_NAND=y
++CONFIG_NAND_CADENCE=y
++CONFIG_SYS_NAND_BLOCK_SIZE=0x20000
++CONFIG_SYS_NAND_ONFI_DETECTION=y
++CONFIG_SYS_NAND_PAGE_SIZE=0x800
+ CONFIG_SYS_NAND_U_BOOT_LOCATIONS=y
+ CONFIG_SYS_NAND_U_BOOT_OFFS=0x0
+ CONFIG_SYS_NAND_U_BOOT_OFFS_REDUND=0x100000
++CONFIG_SPL_NAND_CADENCE=y
++CONFIG_SPL_NAND_FRAMEWORK=y
+ CONFIG_SPI_FLASH_SPANSION=y
+ CONFIG_SPI_FLASH_STMICRO=y
+-CONFIG_PHY_MARVELL=y
+-CONFIG_DWC_ETH_XGMAC=y
+ # CONFIG_SPI_FLASH_USE_4K_SECTORS is not set
+-CONFIG_CMD_NAND_TRIMFFS=y
+-CONFIG_CMD_NAND_LOCK_UNLOCK=y
+ CONFIG_SPI_FLASH_MTD=y
+-CONFIG_SPL_MTD=y
++CONFIG_PHY_MARVELL=y
+ CONFIG_RGMII=y
++CONFIG_PHY=y
++CONFIG_SPL_PHY=y
++CONFIG_NOP_PHY=y
++CONFIG_SPL_NOP_PHY=y
++CONFIG_AGILEX5_PMGR_POWER_DOMAIN=y
+ CONFIG_SYS_NS16550_MEM32=y
+ CONFIG_SPI=y
+ CONFIG_CADENCE_QSPI=y
+@@ -157,11 +143,3 @@ CONFIG_DESIGNWARE_WATCHDOG=y
+ CONFIG_WDT=y
+ # CONFIG_SPL_USE_TINY_PRINTF is not set
+ CONFIG_PANIC_HANG=y
+-CONFIG_SPL_CRC32=y
+-CONFIG_BLOBLIST=y
+-CONFIG_BLOBLIST_SIZE=0x1000
+-CONFIG_BLOBLIST_ADDR=0x72000
+-CONFIG_HANDOFF=y
+-CONFIG_I3C=y
+-CONFIG_DW_I3C_MASTER=y
+-CONFIG_CMD_I3C=y
+-- 
+2.40.1
+
