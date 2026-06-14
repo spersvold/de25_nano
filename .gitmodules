@@ -6,7 +6,7 @@
 	url = https://github.com/spersvold/vctrl
 [submodule "environ/arm-trusted-firmware"]
 	path = environ/arm-trusted-firmware
-	url = https://github.com/terasic/arm-trusted-firmware
+	url = https://github.com/altera-fpga/arm-trusted-firmware.git
 [submodule "environ/u-boot-socfpga"]
 	path = environ/u-boot-socfpga
 	url = https://github.com/terasic/u-boot-socfpga

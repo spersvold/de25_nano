@@ -63,7 +63,7 @@ $(KERNEL_MODULES_TAR): $(KERNEL_IMG)
 arm-firmware: $(ARM_FW_IMG)
 
 $(ARM_FW_IMG):
-	make -j$(NPROC) -C $(ARM_FW_DIR) PLAT=agilex5 bl31
+	make -j$(NPROC) -C $(ARM_FW_DIR) PLAT=agilex5 SOCFPGA_UART_CONFIG=1 bl31
 
 # --- build U-Boot ---
 
