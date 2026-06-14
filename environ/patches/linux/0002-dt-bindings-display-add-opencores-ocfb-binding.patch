@@ -1,7 +1,7 @@
 From 7aa6fc5414f061fee5f3cc848e06e629ff05863a Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
-Subject: [PATCH 2/3] dt-bindings: display: add opencores,ocfb binding
+Subject: [PATCH 2/2] dt-bindings: display: add opencores,ocfb binding
 
 Binding for the OpenCores VGA/LCD 2.0 core and register-compatible
 derivatives: the control/status register window, an optional scanout

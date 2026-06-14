@@ -12,4 +12,4 @@
 	url = https://github.com/altera-fpga/u-boot-socfpga.git
 [submodule "environ/linux-socfpga"]
 	path = environ/linux-socfpga
-	url = https://github.com/terasic/linux-socfpga
+	url = https://github.com/altera-fpga/linux-socfpga.git

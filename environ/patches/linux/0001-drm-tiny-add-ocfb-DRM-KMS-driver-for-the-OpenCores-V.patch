@@ -1,8 +1,8 @@
-From b6b7a02fe2b47f9a2143daaec676a9687f626b60 Mon Sep 17 00:00:00 2001
+From eeb1be98f381191e7358f703ca09148d301b9f8f Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
-Subject: [PATCH 1/3] drm/tiny: add ocfb DRM/KMS driver for the OpenCores
- VGA/LCD core
+Subject: [PATCH 1/2] drm/tiny: add ocfb DRM/KMS driver for the OpenCores VGA/LCD
+ core
 
 Add a DRM/KMS driver for the OpenCores VGA/LCD 2.0 core (ocfb) and
 register-compatible derivatives, with optional support for a line-pitch
@@ -23,24 +23,25 @@ its fbdev driver (drivers/video/fbdev/ocfb.c) by Stefan Kristiansson.
 
 Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
- drivers/gpu/drm/tiny/Kconfig    |  15 +
+ drivers/gpu/drm/tiny/Kconfig    |  16 +
  drivers/gpu/drm/tiny/Makefile   |   1 +
- drivers/gpu/drm/tiny/ocfb-drm.c | 669 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/tiny/ocfb-drm.c | 670 ++++++++++++++++++++++++++++++++
  drivers/video/fbdev/Kconfig     |   3 +
- 4 files changed, 688 insertions(+)
+ 4 files changed, 690 insertions(+)
  create mode 100644 drivers/gpu/drm/tiny/ocfb-drm.c
 
 diff --git a/drivers/gpu/drm/tiny/Kconfig b/drivers/gpu/drm/tiny/Kconfig
-index f6889f64..2bd84c24 100644
+index f0e72d4b..31a21e28 100644
 --- a/drivers/gpu/drm/tiny/Kconfig
 +++ b/drivers/gpu/drm/tiny/Kconfig
-@@ -51,6 +51,21 @@ config DRM_GM12U320
+@@ -66,6 +66,22 @@ config DRM_GM12U320
  	 This is a KMS driver for projectors which use the GM12U320 chipset
  	 for video transfer over USB2/3, such as the Acer C120 mini projector.
  
 +config DRM_OCFB
 +	tristate "OpenCores VGA/LCD core (KMS)"
 +	depends on DRM && OF && HAS_DMA
++	select DRM_CLIENT_SELECTION
 +	select DRM_GEM_DMA_HELPER
 +	select DRM_KMS_HELPER
 +	help
@@ -53,27 +54,27 @@ index f6889f64..2bd84c24 100644
 +
 +	  If M is selected the module will be called ocfb-drm.
 +
- config DRM_OFDRM
- 	tristate "Open Firmware display driver"
- 	depends on DRM && MMU && OF && (PPC || COMPILE_TEST)
+ config DRM_PANEL_MIPI_DBI
+ 	tristate "DRM support for MIPI DBI compatible panels"
+ 	depends on DRM && SPI
 diff --git a/drivers/gpu/drm/tiny/Makefile b/drivers/gpu/drm/tiny/Makefile
-index 76dde89a..0fb21d22 100644
+index 48d30bf6..06e9f104 100644
 --- a/drivers/gpu/drm/tiny/Makefile
 +++ b/drivers/gpu/drm/tiny/Makefile
-@@ -4,6 +4,7 @@ obj-$(CONFIG_DRM_ARCPGU)		+= arcpgu.o
+@@ -5,6 +5,7 @@ obj-$(CONFIG_DRM_ARCPGU)		+= arcpgu.o
  obj-$(CONFIG_DRM_BOCHS)			+= bochs.o
- obj-$(CONFIG_DRM_CIRRUS_QEMU)		+= cirrus.o
+ obj-$(CONFIG_DRM_CIRRUS_QEMU)		+= cirrus-qemu.o
  obj-$(CONFIG_DRM_GM12U320)		+= gm12u320.o
 +obj-$(CONFIG_DRM_OCFB)			+= ocfb-drm.o
- obj-$(CONFIG_DRM_OFDRM)			+= ofdrm.o
  obj-$(CONFIG_DRM_PANEL_MIPI_DBI)	+= panel-mipi-dbi.o
- obj-$(CONFIG_DRM_SIMPLEDRM)		+= simpledrm.o
+ obj-$(CONFIG_DRM_PIXPAPER)              += pixpaper.o
+ obj-$(CONFIG_TINYDRM_HX8357D)		+= hx8357d.o
 diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
 new file mode 100644
-index 00000000..65a363df
+index 00000000..44009bf9
 --- /dev/null
 +++ b/drivers/gpu/drm/tiny/ocfb-drm.c
-@@ -0,0 +1,669 @@
+@@ -0,0 +1,670 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * DRM/KMS driver for the OpenCores VGA/LCD 2.0 core (ocfb) and register-
@@ -105,6 +106,7 @@ index 00000000..65a363df
 +#include <linux/of_reserved_mem.h>
 +#include <linux/platform_device.h>
 +
++#include <drm/clients/drm_client_setup.h>
 +#include <drm/drm_atomic_helper.h>
 +#include <drm/drm_connector.h>
 +#include <drm/drm_device.h>
@@ -605,11 +607,11 @@ index 00000000..65a363df
 +	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 +	.name = "ocfb-drm",
 +	.desc = "OpenCores VGA/LCD core (KMS)",
-+	.date = "20260614",
 +	.major = 1,
 +	.minor = 0,
 +	.fops = &ocfb_fops,
 +	DRM_GEM_DMA_DRIVER_OPS,
++	DRM_FBDEV_DMA_DRIVER_OPS,
 +};
 +
 +static int ocfb_modeset_init(struct ocfb_drm *ocfb)
@@ -704,7 +706,7 @@ index 00000000..65a363df
 +	if (ret)
 +		return ret;
 +
-+	drm_fbdev_dma_setup(drm, 16);
++	drm_client_setup_with_color_mode(drm, 16);
 +
 +	return 0;
 +}
@@ -730,7 +732,7 @@ index 00000000..65a363df
 +
 +static struct platform_driver ocfb_platform_driver = {
 +	.probe = ocfb_probe,
-+	.remove_new = ocfb_remove,
++	.remove = ocfb_remove,
 +	.shutdown = ocfb_shutdown,
 +	.driver = {
 +		.name = "ocfb-drm",
@@ -744,10 +746,10 @@ index 00000000..65a363df
 +MODULE_DESCRIPTION("OpenCores VGA/LCD 2.0 DRM/KMS driver");
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/video/fbdev/Kconfig b/drivers/video/fbdev/Kconfig
-index 1f8c12bd..f1512560 100644
+index ac89ce14..be24b6a4 100644
 --- a/drivers/video/fbdev/Kconfig
 +++ b/drivers/video/fbdev/Kconfig
-@@ -680,6 +680,9 @@ config FB_PVR2
+@@ -648,6 +648,9 @@ config FB_PVR2
  config FB_OPENCORES
  	tristate "OpenCores VGA/LCD core 2.0 framebuffer support"
  	depends on FB && HAS_DMA

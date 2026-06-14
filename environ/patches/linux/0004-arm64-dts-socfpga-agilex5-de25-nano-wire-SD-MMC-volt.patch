@@ -1,0 +1,101 @@
+From b51fe8fc54af06732ebfafe86a4e1aafa21111b7 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Sun, 14 Jun 2026 12:00:00 +0200
+Subject: [PATCH] arm64: dts: socfpga: agilex5-de25-nano: wire SD/MMC voltage
+ regulators
+
+When forward-ported to QPDS26.1 (6.18) the Agilex5 base SoC dtsi gained
+SD/eMMC voltage regulators (sd_emmc_power, sd_io_1v8_reg) and switched
+the MMC controller from SD4HC to SD6HC. The SoCDK reference now wires
+vmmc-supply/vqmmc-supply for its UHS sdr104 slot via the gpio-switched
+sd_io_1v8_reg, and the new sdhci-cadence6 driver ignores the old SD4HC
+cdns,phy-*/cdns,hrs* PHY tuning properties the DE25 node still carried.
+
+Bring the DE25-Nano MMC node in line with the reference:
+ - drop the dead SD4HC cdns,phy-*/cdns,hrs* block (no consumer in the
+   SD6HC driver; rely on driver defaults as the SoCDK does);
+ - wire vmmc-supply and vqmmc-supply. The DE25 SD slot is 3.3V-only (no
+   level shifter / voltage-select GPIO, hence no-1-8-v), so both the card
+   VDD and the bus I/O come off the fixed 3.3V sd_emmc_power rail rather
+   than the gpio-switched sd_io_1v8_reg the SoCDK uses for UHS;
+ - drop the inert sd-uhs-sdr50 (UHS needs 1.8V signalling, blocked by
+   no-1-8-v) and run SD high-speed at 3.3V.
+
+Mirrors the u-boot 2026.01 forward-port of the same board.
+
+Signed-off-by: Steffen Persvold <spersvold@gmail.com>
+---
+ .../dts/intel/socfpga_agilex5_de25_nano.dts   | 53 +++++--------------
+ 1 file changed, 13 insertions(+), 40 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
+index b0990578..cbcb5a78 100644
+--- a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
++++ b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
+@@ -143,50 +143,23 @@ emac0_phy0: ethernet-phy@0 {
+ 
+ &mmc {
+ 	status = "okay";
++	no-mmc;
++	no-sdio;
++	disable-wp;
++	cap-sd-highspeed;
+ 	bus-width = <4>;
++	/*
++	 * 3.3V-only SD-card slot: no level shifter / voltage-select GPIO, so
++	 * UHS (1.8V signalling) is unavailable -- run SD high-speed at 3.3V.
++	 * The card VDD and bus I/O both come off the fixed 3.3V rail, so both
++	 * supplies point at sd_emmc_power rather than the gpio-switched
++	 * sd_io_1v8_reg the SoCDK uses for its UHS sdr104 slot.
++	 */
+ 	no-1-8-v;
+-	cap-sd-highspeed;
+-	disable-wp;
+-	sd-uhs-sdr50;
++	vmmc-supply = <&sd_emmc_power>;
++	vqmmc-supply = <&sd_emmc_power>;
+ 	sdhci-caps = <0x00000000 0x0000c800>;
+ 	sdhci-caps-mask = <0x00002000 0x0000ff00>;
+-	no-sdio;
+-	cdns,phy-use-ext-lpbk-dqs = <1>;
+-	cdns,phy-use-lpbk-dqs = <1>;
+-	cdns,phy-use-phony-dqs = <1>;
+-	cdns,phy-use-phony-dqs-cmd = <1>;
+-	cdns,phy-io-mask-always-on = <0>;
+-	cdns,phy-io-mask-end = <5>;
+-	cdns,phy-io-mask-start = <0>;
+-	cdns,phy-data-select-oe-end = <1>;
+-	cdns,phy-sync-method = <1>;
+-	cdns,phy-sw-half-cycle-shift = <0>;
+-	cdns,phy-rd-del-sel = <52>;
+-	cdns,phy-underrun-suppress = <1>;
+-	cdns,phy-gate-cfg-always-on = <1>;
+-	cdns,phy-param-dll-bypass-mode = <1>;
+-	cdns,phy-param-phase-detect-sel = <2>;
+-	cdns,phy-param-dll-start-point = <254>;
+-	cdns,phy-read-dqs-cmd-delay = <0>;
+-	cdns,phy-clk-wrdqs-delay = <0>;
+-	cdns,phy-clk-wr-delay = <0>;
+-	cdns,phy-read-dqs-delay = <0>;
+-	cdns,phy-phony-dqs-timing = <0>;
+-	cdns,hrs09-rddata-en = <1>;
+-	cdns,hrs09-rdcmd-en = <1>;
+-	cdns,hrs09-extended-wr-mode = <1>;
+-	cdns,hrs09-extended-rd-mode = <1>;
+-	cdns,hrs10-hcsdclkadj = <3>;
+-	cdns,hrs16-wrdata1-sdclk-dly = <0>;
+-	cdns,hrs16-wrdata0-sdclk-dly = <0>;
+-	cdns,hrs16-wrcmd1-sdclk-dly = <0>;
+-	cdns,hrs16-wrcmd0-sdclk-dly = <0>;
+-	cdns,hrs16-wrdata1-dly = <0>;
+-	cdns,hrs16-wrdata0-dly = <0>;
+-	cdns,hrs16-wrcmd1-dly = <0>;
+-	cdns,hrs16-wrcmd0-dly = <0>;
+-	cdns,hrs07-rw-compensate = <10>;
+-	cdns,hrs07-idelay-val = <0>;
+ };
+ 
+ &osc1 {
+-- 
+2.40.1
+

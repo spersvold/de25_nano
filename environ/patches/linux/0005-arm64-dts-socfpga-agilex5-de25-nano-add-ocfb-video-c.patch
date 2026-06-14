@@ -1,7 +1,7 @@
 From 457367436f5b518a0fde73fcf05663bf69b234d1 Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
-Subject: [PATCH 3/3] arm64: dts: socfpga: agilex5: de25-nano: add ocfb video
+Subject: [PATCH] arm64: dts: socfpga: agilex5: de25-nano: add ocfb video
  controller
 
 Wire up the FPGA video controller (opencores,ocfb -- the vctrl RTL block)
