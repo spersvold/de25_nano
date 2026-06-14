@@ -302,6 +302,9 @@ module de25_nano_top
    wire                      f2h_rready;
    wire [7:0]                f2h_ruser;
 
+   // FPGA2HPS Interrupts
+   wire [31:0]               f2h_irq0;
+
    // LWHPS2FPGA AXI4 Master port (HPS -> FPGA, lightweight)
    wire [3:0]                lwh2f_awid;
    wire [28:0]               lwh2f_awaddr;
@@ -477,7 +480,8 @@ module de25_nano_top
       .mem_0_dqs_c               (LPDDR4A_DQS_n),
       .mem_0_reset_n             (LPDDR4A_RESET_n),
       .oct_rzqin_0               (LPDDR4A_RZQ),
-      .ref_clk                   (LPDDR4A_REFCLK_p)
+      .ref_clk                   (LPDDR4A_REFCLK_p),
+      .f2h_irq0                  (f2h_irq0)
       );
 
    //
@@ -728,6 +732,10 @@ module de25_nano_top
    wire [VR_DATAW-1:0]       fb_rdata;
    wire                      fb_rvalid;
 
+   // vctrl vsync interrupt -> HPS via fpga2hps_interrupt_irq0[0] (GIC SPI 17).
+   wire                      vctrl_irq;
+   assign f2h_irq0 = {31'b0, vctrl_irq};
+
    vctrl_core #
      (.VR_SIZE  (VR_SIZE),
       .VR_DATAW (VR_DATAW),
@@ -742,7 +750,7 @@ module de25_nano_top
       .cfg_d,
       .cfg_q,
       .cfg_ack,
-      .irq        (), // unused
+      .irq        (vctrl_irq),
       .frame_sys,
       .vbar       (vctrl_vbar),
       .fb_rdreq,

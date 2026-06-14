@@ -167,13 +167,15 @@ module hps_wrapper
    ,output wire         mem_0_reset_n
    ,input  wire         oct_rzqin_0
    ,input  wire         ref_clk
+   // FPGA-to-HPS interrupt requests, lower 32 bits (irq0[x] -> GIC SPI 17+x).
+   ,input  wire [31:0]  f2h_irq0
    );
 
    // =========================================================================================
    // HPS misc signals
    // =========================================================================================
 
-   wire [31:0]          fpga2hps_interrupt_irq0_irq = '0;   //  fpga2hps_interrupt_irq0.irq,              FPGA-to-HPS interrupts (lower 32 bits).
+   wire [31:0]          fpga2hps_interrupt_irq0_irq = f2h_irq0;   //  fpga2hps_interrupt_irq0.irq,              FPGA-to-HPS interrupts (lower 32 bits).
    wire [31:0]          fpga2hps_interrupt_irq1_irq = '0;   //  fpga2hps_interrupt_irq1.irq,              FPGA-to-HPS interrupts (higher 32 bits).
 
    // =========================================================================================
