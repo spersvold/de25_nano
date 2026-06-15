@@ -1,4 +1,4 @@
-From 7ee57cd9ecd678b180ba39b0f2ccbe331522d6b3 Mon Sep 17 00:00:00 2001
+From 9d46a45c8bae67d9b14e219031b2b5b23b493238 Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
 Subject: [PATCH 5/5] arm64: dts: socfpga: agilex5: de25-nano: add ocfb video
@@ -13,47 +13,17 @@ output ceiling.
 
 Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
- .../dts/intel/socfpga_agilex5_de25_nano.dts   | 93 +++++++++++++++++++
- 1 file changed, 93 insertions(+)
+ .../dts/intel/socfpga_agilex5_de25_nano.dts   | 63 +++++++++++++++++++
+ 1 file changed, 63 insertions(+)
 
 diff --git a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
-index e1acbfc7..ab931cb4 100644
+index e1acbfc7..f9945e98 100644
 --- a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
 +++ b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
-@@ -38,6 +38,99 @@ memory {
+@@ -38,6 +38,69 @@ memory {
  	};
  };
  
-+/ {
-+	reserved-memory {
-+		#address-cells = <2>;
-+		#size-cells = <2>;
-+		ranges;
-+
-+		/*
-+		 * Framebuffer pool in LPDDR4, referenced by the framebuffer node's
-+		 * memory-region: the DRM driver allocates all its GEM-DMA / dumb
-+		 * scanout buffers here. Sized for several full-screen buffers --
-+		 * GBM/EGL clients double/triple-buffer (plus a depth buffer) and
-+		 * fbcon holds one, ~8 MiB each at 1920x1080x32 -- hence 64 MiB.
-+		 *
-+		 * Dynamically placed (size, not reg) so the kernel picks a free
-+		 * range; all of this board's DDR is the 1 GiB window
-+		 * 0x8000_0000-0xBFFF_FFFF (< 4 GiB), so any placement is reachable by
-+		 * the 32-bit VBAR. no-map keeps it out of the cacheable linear map;
-+		 * the DMA layer memremaps it write-combining, which suits
-+		 * vctrl_axim's non-coherent (ARCACHE=Non-cacheable) FPGA->HPS reads
-+		 * -- so do NOT mark it dma-coherent.
-+		 */
-+		fb_reserved: framebuffer {
-+			compatible = "shared-dma-pool";
-+			no-map;
-+			size = <0x0 0x04000000>;
-+			alignment = <0x0 0x00100000>;
-+		};
-+	};
-+};
-+
 +/ {
 +	/*
 +	 * Reference clock (fIN) for the FPGA HDMI pixel-clock PLL: the fixed
@@ -73,25 +43,25 @@ index e1acbfc7..ab931cb4 100644
 +	 * reached through the lightweight HPS->FPGA bridge (lwh2f base
 +	 * 0x2000_0000, CSR block at offset 0 per lw_ctrl_bridge.sv).
 +	 *
-+	 * reg[0] = 4 KiB CSR window. The scanout buffer comes from the
-+	 * fb_reserved dma-pool referenced by memory-region: the ocfb DRM driver
-+	 * allocates a GEM-DMA buffer there and programs its physical base into the
-+	 * VBAR register (0x14), which feeds vctrl_axim's FPGA->HPS reads.
++	 * reg[0] = 4 KiB CSR window. The ocfb DRM driver allocates GEM-DMA
++	 * scanout buffers and programs VBAR (0x14, base) and VSIZ (0x18, size)
++	 * that drive vctrl_axim's reads. Those reads reach DRAM via the
++	 * FPGA-to-SDRAM bridge behind the SMMU (iommus below), so VBAR carries an
++	 * IOVA and no reserved carveout is needed.
 +	 */
 +	framebuffer0: framebuffer@20000000 {
 +		compatible = "opencores,ocfb";
 +		reg = <0x20000000 0x1000>;
 +		/* vctrl vsync -> fpga2hps_interrupt_irq0[0] -> GIC SPI 17 */
 +		interrupts = <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>;
-+		memory-region = <&fb_reserved>;
 +		/*
-+		 * VBAR holds the scanout base in the FPGA-to-SDRAM master's address
-+		 * space:  VBAR = dma_addr - vbar-offset, with
-+		 * offset = (MPU DRAM base) - (f2sdram window base). The f2sdram master
-+		 * reaches DRAM through the sdram_2G window, based at 0x8000_0000 -- the
-+		 * same base the MPU sees -- so it is 1:1 and the offset is 0. (Set it
-+		 * to 0x8000_0000 only if the f2sdram window is DRAM-relative/0-based.)
++		 * Scanout DMA goes through the SMMU. The f2sdram master presents
++		 * AxMMUSID = 0x10, AxMMUSECSID = 0 (non-secure), so bind this device
++		 * to that non-secure stream. dma_alloc then returns an IOVA and VBAR
++		 * carries it directly -- the SMMU does the IOVA->physical mapping, so
++		 * vbar-offset stays 0 and no reserved-memory carveout is needed.
 +		 */
++		iommus = <&smmu 0x10>;
 +		opencores,vbar-offset = <0>;
 +		/* this vctrl implements the optional 0x20 pitch register and
 +		 * hardware scan doubling (control register bit 16) */
