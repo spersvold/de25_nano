@@ -688,82 +688,6 @@ module de25_nano_top
       .f2h_irq0                  (f2h_irq0)
       );
 
-   //
-   // Control-plane bridge: lwhps2fpga AXI4 -> video controller cfg bus
-   //
-
-   wire                      cfg_req, cmd_req;
-   wire [11:2]               cfg_adr, cmd_adr;
-   wire                      cfg_we, cmd_we;
-   wire [ 3:0]               cfg_be, cmd_be;
-   wire [31:0]               cfg_d, cmd_d;
-   wire [31:0]               cfg_q, cmd_q;
-   wire                      cfg_ack, cmd_ack;
-
-   lw_ctrl_bridge u_lw_ctrl_bridge
-     (.clk            (clk_sys),
-      .rst            (rst_sys),
-      .s_axi_awid     (lwhps2fpga_awid),
-      .s_axi_awaddr   (lwhps2fpga_awaddr),
-      .s_axi_awlen    (lwhps2fpga_awlen),
-      .s_axi_awsize   (lwhps2fpga_awsize),
-      .s_axi_awburst  (lwhps2fpga_awburst),
-      .s_axi_awlock   (lwhps2fpga_awlock),
-      .s_axi_awcache  (lwhps2fpga_awcache),
-      .s_axi_awprot   (lwhps2fpga_awprot),
-      .s_axi_awvalid  (lwhps2fpga_awvalid),
-      .s_axi_awready  (lwhps2fpga_awready),
-      .s_axi_wdata    (lwhps2fpga_wdata),
-      .s_axi_wstrb    (lwhps2fpga_wstrb),
-      .s_axi_wlast    (lwhps2fpga_wlast),
-      .s_axi_wvalid   (lwhps2fpga_wvalid),
-      .s_axi_wready   (lwhps2fpga_wready),
-      .s_axi_bid      (lwhps2fpga_bid),
-      .s_axi_bresp    (lwhps2fpga_bresp),
-      .s_axi_bvalid   (lwhps2fpga_bvalid),
-      .s_axi_bready   (lwhps2fpga_bready),
-      .s_axi_arid     (lwhps2fpga_arid),
-      .s_axi_araddr   (lwhps2fpga_araddr),
-      .s_axi_arlen    (lwhps2fpga_arlen),
-      .s_axi_arsize   (lwhps2fpga_arsize),
-      .s_axi_arburst  (lwhps2fpga_arburst),
-      .s_axi_arlock   (lwhps2fpga_arlock),
-      .s_axi_arcache  (lwhps2fpga_arcache),
-      .s_axi_arprot   (lwhps2fpga_arprot),
-      .s_axi_arvalid  (lwhps2fpga_arvalid),
-      .s_axi_arready  (lwhps2fpga_arready),
-      .s_axi_rid      (lwhps2fpga_rid),
-      .s_axi_rdata    (lwhps2fpga_rdata),
-      .s_axi_rresp    (lwhps2fpga_rresp),
-      .s_axi_rlast    (lwhps2fpga_rlast),
-      .s_axi_rvalid   (lwhps2fpga_rvalid),
-      .s_axi_rready   (lwhps2fpga_rready),
-      // video controller config bus
-      .cfg_req,
-      .cfg_adr,
-      .cfg_we,
-      .cfg_be,
-      .cfg_d,
-      .cfg_q,
-      .cfg_ack,
-      // dma command bus
-      .cmd_req,
-      .cmd_adr,
-      .cmd_we,
-      .cmd_be,
-      .cmd_d,
-      .cmd_q,
-      .cmd_ack
-      );
-
-   // XXX: Tie-off DMA Command bus
-   logic                     cmd_ack_r;
-   always_ff @(posedge clk_sys) begin
-      cmd_ack_r <= cmd_req;
-   end
-   assign cmd_ack = cmd_ack_r;
-   assign cmd_q = '0;
-
    // HDMI PHY I2C init -- ADV7513-class chips need a register-write
    // sequence over I2C before they forward video out. Runs on the
    // chipset clock since the engine sits naturally alongside the rest
@@ -869,8 +793,8 @@ module de25_nano_top
    wire [31:0]               hdmi_pll_divcnt;       // PLLDIVCNT (clk_sys, quasi-static)
    wire                      hdmi_pll_apply;        // trigger pulse (clk_sys)
    wire                      hdmi_pll_done;         // done pulse (clk_sys)
+   wire                      hdmi_pll_error;        // synced recal error (clk_sys)
    wire                      hdmi_pll_locked_sys;   // synced PLL locked (clk_sys)
-   wire                      hdmi_pll_error_sys;    // synced recal error (clk_sys)
 
    wire                      hdmi_recfg_start;      // buf_refclk
    wire                      hdmi_recfg_done;       // buf_refclk
@@ -887,8 +811,8 @@ module de25_nano_top
       .i (hdmi_recfg_done), .o (hdmi_pll_done));
 
    // status levels -> clk_sys
+   synchronizer u_pll_error_sync  (.clk (clk_sys), .d (hdmi_recfg_error), .q (hdmi_pll_error));
    synchronizer u_pll_locked_sync (.clk (clk_sys), .d (hdmi_pll_locked),  .q (hdmi_pll_locked_sys));
-   synchronizer u_pll_error_sync  (.clk (clk_sys), .d (hdmi_recfg_error), .q (hdmi_pll_error_sys));
 
    hdmi_pll_recfg u_hdmi_pll_recfg
      (.clk           (buf_refclk),
@@ -906,101 +830,73 @@ module de25_nano_top
       .avl_read,
       .avl_readdata);
 
-   wire                      hdmi_config_done_pix;
-   synchronizer hdmi_config_done_sync (.clk(clk_pix), .d(hdmi_config_done), .q(hdmi_config_done_pix));
-
    //
    // Video Controller
    //
-   // Full framebuffer scanout core. It is programmed over the cfg_* register
-   // bus (timing, pitch, color depth, palette, enable) and fetches pixel data
-   // through the fb_* memory read port.
 
-   localparam int            VR_SIZE  = 1920 * 1080 * 4; // worst case: 1080p @ 32 bpp
-   localparam int            VR_DATAW = 32;              // FB data width (cproc only supports 32)
-   localparam int            LB_DEPTH = 2048;            // line buffer depth = max horizontal res
-   localparam int            VR_ADDRW = $clog2(VR_SIZE);
+   // vctrl vsync interrupt -> HPS via fpga2hps_interrupt_irq0[0] (GIC SPI 17).
+   logic                     vctrl_irq;
+   assign f2h_irq0 = {31'b0, vctrl_irq};
 
    wire [7:0]                vga_r, vga_g, vga_b;
    wire                      vga_hs, vga_vs, vga_bl;
-   // hdmi_output expects active-high Data Enable; the core provides Blanking
-   wire                      vga_de = ~vga_bl & hdmi_config_done_pix;
 
-   wire                      frame_sys;      // start-of-frame strobe (to scanout master)
-   wire [31:2]               vctrl_vbar;     // video base address (from VBAR reg)
-   wire [31:2]               vctrl_vsiz;     // scanout buffer size (from VSIZ reg)
-   wire                      vctrl_ven;      // scanout enable -> gates the fetch master
-   wire                      vctrl_fetch_idle; // fetch master idle (no reads in flight)
-
-   // Frame buffer read port - driven by the scanout AXI master (u_vctrl_axim)
-   wire                      fb_rdreq;
-   wire [VR_ADDRW-1:0]       fb_raddr;
-   wire                      fb_rdack;
-   wire [VR_DATAW-1:0]       fb_rdata;
-   wire                      fb_rvalid;
-
-   // vctrl vsync interrupt -> HPS via fpga2hps_interrupt_irq0[0] (GIC SPI 17).
-   wire                      vctrl_irq;
-   assign f2h_irq0 = {31'b0, vctrl_irq};
-
-   vctrl_core #
-     (.VR_SIZE  (VR_SIZE),
-      .VR_DATAW (VR_DATAW),
-      .LB_DEPTH (LB_DEPTH))
-   u_vctrl_core
+   vctrl_wrapper #
+     (.AXI_ID_W   (5),
+      .AXI_ADDR_W (32),
+      .AXI_DATA_W (256))
+   u_vctrl_wrapper
      (.clk_sys,
       .rst_sys,
-      .cfg_req,
-      .cfg_adr,
-      .cfg_we,
-      .cfg_be,
-      .cfg_d,
-      .cfg_q,
-      .cfg_ack,
-      .irq        (vctrl_irq),
-      .frame_sys,
-      .vbar       (vctrl_vbar),
-      .vsiz       (vctrl_vsiz),
-      .ven        (vctrl_ven),
-      .fetch_idle (vctrl_fetch_idle),
-      .fb_rdreq,
-      .fb_raddr,
-      .fb_rdack,
-      .fb_rdata,
-      .fb_rvalid,
       .clk_pix,
       .rst_pix,
-      .pll_divcnt (hdmi_pll_divcnt),
-      .pll_apply  (hdmi_pll_apply),
-      .pll_done   (hdmi_pll_done),
-      .pll_locked (hdmi_pll_locked_sys),
-      .pll_error  (hdmi_pll_error_sys),
-      .vga_r,
-      .vga_g,
-      .vga_b,
-      .vga_bl,
-      .vga_hs,
-      .vga_vs
-      );
-
-   //
-   // Scanout AXI read master (native 256-bit, internal line buffer)
-   //
-
-   wire [31:0]               fb_base = {vctrl_vbar, 2'b00};
-   wire [31:0]               fb_size = {vctrl_vsiz, 2'b00};
-
-   vctrl_axim #
-     (.ADDR_WIDTH     (32),
-      .AXI_DATA_WIDTH (256),
-      .FB_DATA_WIDTH  (VR_DATAW),
-      .FB_ADDR_WIDTH  (VR_ADDRW),
-      .ID_WIDTH       (5),
-      .BURST_LEN      (16), // DATA_WIDTH=256, BURST_LEN=16 -> 512Byte per burst
-      .FIFO_LGDEPTH   (9))  // DATA_WIDTH=256, 512 entries -> 16KiB
-   u_vctrl_axim
-     (.clk           (clk_sys),
-      .rst           (rst_sys),
+      .vctrl_irq,
+      //
+      .pll_divcnt   (hdmi_pll_divcnt),
+      .pll_apply    (hdmi_pll_apply),
+      .pll_done     (hdmi_pll_done),
+      .pll_locked   (hdmi_pll_locked_sys),
+      .pll_error    (hdmi_pll_error),
+      //
+      .vga_r,  .vga_g,  .vga_b,
+      .vga_hs, .vga_vs, .vga_bl,
+      //
+      .lwhps2fpga_awid,
+      .lwhps2fpga_awaddr,
+      .lwhps2fpga_awlen,
+      .lwhps2fpga_awsize,
+      .lwhps2fpga_awburst,
+      .lwhps2fpga_awlock,
+      .lwhps2fpga_awcache,
+      .lwhps2fpga_awprot,
+      .lwhps2fpga_awvalid,
+      .lwhps2fpga_awready,
+      .lwhps2fpga_wdata,
+      .lwhps2fpga_wstrb,
+      .lwhps2fpga_wlast,
+      .lwhps2fpga_wvalid,
+      .lwhps2fpga_wready,
+      .lwhps2fpga_bid,
+      .lwhps2fpga_bresp,
+      .lwhps2fpga_bvalid,
+      .lwhps2fpga_bready,
+      .lwhps2fpga_arid,
+      .lwhps2fpga_araddr,
+      .lwhps2fpga_arlen,
+      .lwhps2fpga_arsize,
+      .lwhps2fpga_arburst,
+      .lwhps2fpga_arlock,
+      .lwhps2fpga_arcache,
+      .lwhps2fpga_arprot,
+      .lwhps2fpga_arvalid,
+      .lwhps2fpga_arready,
+      .lwhps2fpga_rid,
+      .lwhps2fpga_rdata,
+      .lwhps2fpga_rresp,
+      .lwhps2fpga_rlast,
+      .lwhps2fpga_rvalid,
+      .lwhps2fpga_rready,
+      //
 `ifdef ENABLE_FPGA2HPS
       .m_axi_arid    (fpga2hps_arid),
       .m_axi_araddr  (fpga2hps_araddr),
@@ -1036,7 +932,7 @@ module de25_nano_top
       .m_axi_bid     (fpga2hps_bid),
       .m_axi_bresp   (fpga2hps_bresp),
       .m_axi_bvalid  (fpga2hps_bvalid),
-      .m_axi_bready  (fpga2hps_bready),
+      .m_axi_bready  (fpga2hps_bready)
 `else // !`ifdef ENABLE_FPGA2HPS
       .m_axi_arid    (f2sdram_arid),
       .m_axi_araddr  (f2sdram_araddr),
@@ -1072,19 +968,15 @@ module de25_nano_top
       .m_axi_bid     (f2sdram_bid),
       .m_axi_bresp   (f2sdram_bresp),
       .m_axi_bvalid  (f2sdram_bvalid),
-      .m_axi_bready  (f2sdram_bready),
+      .m_axi_bready  (f2sdram_bready)
 `endif // !`ifdef ENABLE_FPGA2HPS
-      .frame_sys,
-      .fb_base,
-      .fb_size,
-      .ven           (vctrl_ven),
-      .fetch_idle    (vctrl_fetch_idle),
-      .fb_rdreq,
-      .fb_raddr,
-      .fb_rdack,
-      .fb_rdata,
-      .fb_rvalid
       );
+
+   wire                      hdmi_config_done_pix;
+   synchronizer hdmi_config_done_sync (.clk(clk_pix), .d(hdmi_config_done), .q(hdmi_config_done_pix));
+
+   // hdmi_output expects active-high Data Enable; the core provides Blanking
+   wire                      vga_de = ~vga_bl & hdmi_config_done_pix;
 
    // HDMI Transmitter outputs
    hdmi_output u_hdmi_output

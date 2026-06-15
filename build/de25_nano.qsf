@@ -95,6 +95,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hdmi_output.sv
 # Top-level wrappers
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hps_wrapper.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/lw_ctrl_bridge.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/vctrl_wrapper.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/de25_nano_top.sv
 
 # And our constraints at the end

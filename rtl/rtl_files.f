@@ -5,3 +5,4 @@ hdmi_pll_recfg.sv
 hdmi_tx_config.sv
 hps_wrapper.sv
 lw_ctrl_bridge.sv
+vctrl_wrapper.sv
