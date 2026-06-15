@@ -724,6 +724,9 @@ module de25_nano_top
 
    wire                      frame_sys;      // start-of-frame strobe (to scanout master)
    wire [31:2]               vctrl_vbar;     // video base address (from VBAR reg)
+   wire [31:2]               vctrl_vsiz;     // scanout buffer size (from VSIZ reg)
+   wire                      vctrl_ven;      // scanout enable -> gates the fetch master
+   wire                      vctrl_fetch_idle; // fetch master idle (no reads in flight)
 
    // Frame buffer read port - driven by the scanout AXI master (u_vctrl_axim)
    wire                      fb_rdreq;
@@ -753,6 +756,9 @@ module de25_nano_top
       .irq        (vctrl_irq),
       .frame_sys,
       .vbar       (vctrl_vbar),
+      .vsiz       (vctrl_vsiz),
+      .ven        (vctrl_ven),
+      .fetch_idle (vctrl_fetch_idle),
       .fb_rdreq,
       .fb_raddr,
       .fb_rdack,
@@ -778,6 +784,7 @@ module de25_nano_top
    //
 
    wire [31:0]               fb_base = {vctrl_vbar, 2'b00};
+   wire [31:0]               fb_size = {vctrl_vsiz, 2'b00};
 
    vctrl_axim #
      (.ADDR_WIDTH     (32),
@@ -792,6 +799,9 @@ module de25_nano_top
       .rst           (rst_sys),
       .frame_sys,
       .fb_base,
+      .fb_size,
+      .ven           (vctrl_ven),
+      .fetch_idle    (vctrl_fetch_idle),
       .fb_rdreq,
       .fb_raddr,
       .fb_rdack,
