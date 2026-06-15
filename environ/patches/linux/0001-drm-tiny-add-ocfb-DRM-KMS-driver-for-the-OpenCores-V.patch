@@ -1,4 +1,4 @@
-From 381f5fa266d7bba6afb5e6e7e2e850f0287fae6a Mon Sep 17 00:00:00 2001
+From 9bc8157f83a36a73e27e70a8127edc036154b4ab Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
 Subject: [PATCH 1/5] drm/tiny: add ocfb DRM/KMS driver for the OpenCores
@@ -25,9 +25,9 @@ Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
  drivers/gpu/drm/tiny/Kconfig    |  16 +
  drivers/gpu/drm/tiny/Makefile   |   1 +
- drivers/gpu/drm/tiny/ocfb-drm.c | 786 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/tiny/ocfb-drm.c | 808 ++++++++++++++++++++++++++++++++
  drivers/video/fbdev/Kconfig     |   3 +
- 4 files changed, 806 insertions(+)
+ 4 files changed, 828 insertions(+)
  create mode 100644 drivers/gpu/drm/tiny/ocfb-drm.c
 
 diff --git a/drivers/gpu/drm/tiny/Kconfig b/drivers/gpu/drm/tiny/Kconfig
@@ -71,10 +71,10 @@ index 48d30bf6..06e9f104 100644
  obj-$(CONFIG_TINYDRM_HX8357D)		+= hx8357d.o
 diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
 new file mode 100644
-index 00000000..345bc237
+index 00000000..30e83a18
 --- /dev/null
 +++ b/drivers/gpu/drm/tiny/ocfb-drm.c
-@@ -0,0 +1,786 @@
+@@ -0,0 +1,808 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * DRM/KMS driver for the OpenCores VGA/LCD 2.0 core (ocfb) and register-
@@ -133,6 +133,7 @@ index 00000000..345bc237
 +#define OCFB_VTIM	0x00c
 +#define OCFB_HVLEN	0x010
 +#define OCFB_VBARA	0x014
++#define OCFB_VSIZ	0x018
 +#define OCFB_PITCH	0x020
 +
 +#define OCFB_CTRL_VEN	0x00000001 /* Video Enable */
@@ -147,6 +148,7 @@ index 00000000..345bc237
 +#define OCFB_CTRL_VSL	0x00002000 /* VSync active low */
 +
 +#define OCFB_STAT_VINT	0x00000010 /* VSync interrupt pending (write 1 to clear) */
++#define OCFB_STAT_IDLE	0x00000100 /* scanout fetch idle: no reads in flight (RO) */
 +
 +/*
 + * Programmable pixel-clock PLL CSRs (opencores,programmable-pixclk) -- an
@@ -512,6 +514,14 @@ index 00000000..345bc237
 +	 */
 +	ocfb_wr(ocfb, OCFB_VBARA,
 +		lower_32_bits(gem->dma_addr - ocfb->vbar_offset));
++
++	/*
++	 * Bound the hardware prefetch to this buffer so the scanout master never
++	 * reads past its end. Matters behind an IOMMU, where the read-ahead would
++	 * otherwise hit an unmapped page and fault; harmless but correct on a flat
++	 * map too. gem->base.size is the page-rounded allocation == mapped extent.
++	 */
++	ocfb_wr(ocfb, OCFB_VSIZ, gem->base.size);
 +}
 +
 +/*
@@ -619,10 +629,22 @@ index 00000000..345bc237
 +static void ocfb_pipe_disable(struct drm_simple_display_pipe *pipe)
 +{
 +	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++	u32 stat;
 +
 +	if (ocfb->irq > 0)
 +		drm_crtc_vblank_off(&pipe->crtc);
++
++	/* CTRL=0 clears VEN, which also gates the scanout read master. */
 +	ocfb_wr(ocfb, OCFB_CTRL, 0);
++
++	/*
++	 * Wait for the read master to drain (no reads in flight) before we
++	 * return: cleanup_fb may then unmap the framebuffer, and behind an
++	 * IOMMU an outstanding read would fault on the torn-down mapping.
++	 */
++	if (read_poll_timeout(ocfb_rd, stat, stat & OCFB_STAT_IDLE,
++			      10, 20000, false, ocfb, OCFB_STAT))
++		dev_warn(ocfb->drm.dev, "scanout fetch did not drain on disable\n");
 +}
 +
 +static void ocfb_pipe_update(struct drm_simple_display_pipe *pipe,
