@@ -253,7 +253,7 @@ module de25_nano_top
    // HPS Subsystem
    //
 
-   localparam [ 0:0] AXMMUSECSID = 1'b1;      // Use Secure MMU Context -> SMMU Bypass
+   localparam [ 0:0] AXMMUSECSID = 1'b0;      // Use Non-Secure MMU Context (MMU Active)
    localparam [15:0] AXMMUSID    = 16'h0010;  // MMU Stream ID (when not secure)
 
    // FPGA2HPS Interrupts
