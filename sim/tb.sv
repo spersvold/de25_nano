@@ -189,7 +189,7 @@ module tb
    // =====================================================================
    // HDMI PLL reconfiguration test
    //
-   // Drives CSR transactions onto the lwh2f AXI4 master (via `force` over
+   // Drives CSR transactions onto the lwhps2fpga AXI4 master (via `force` over
    // the HPS-driven signals, since the HPS is a black box in sim) and
    // monitors the reconfiguration FSM hierarchically (dut.avl_* core_avl
    // bus + the PLLCTRL status read-back). buf_refclk == CLOCK0_50 == clk.
@@ -255,8 +255,8 @@ module tb
       end
    end
 
-   // ---- CSR access over the lwh2f AXI4 slave -----------------------------
-   // The HPS is a black box in sim, so we override its lwh2f master with
+   // ---- CSR access over the lwhps2fpga AXI4 slave -----------------------------
+   // The HPS is a black box in sim, so we override its lwhps2fpga master with
    // `force`. A force's RHS must be static (VCS rejects automatic task args),
    // so the master signals are forced ONCE onto these static driver regs and
    // the tasks just write the regs with ordinary blocking assignments.
@@ -273,37 +273,37 @@ module tb
    logic [ 3:0] drv_arcache; logic [ 2:0] drv_arprot;  logic        drv_arvalid;
    logic        drv_rready;
 
-   // Park the master idle, then bind the DUT's lwh2f inputs to the driver regs.
+   // Park the master idle, then bind the DUT's lwhps2fpga inputs to the driver regs.
    task automatic csr_init;
       drv_awid='0; drv_awaddr='0; drv_awlen='0; drv_awsize=3'd2; drv_awburst=2'b01;
       drv_awlock='0; drv_awcache='0; drv_awprot='0; drv_awvalid=1'b0;
       drv_wdata='0; drv_wstrb='0; drv_wlast=1'b0; drv_wvalid=1'b0; drv_bready=1'b0;
       drv_arid='0; drv_araddr='0; drv_arlen='0; drv_arsize=3'd2; drv_arburst=2'b01;
       drv_arlock='0; drv_arcache='0; drv_arprot='0; drv_arvalid=1'b0; drv_rready=1'b0;
-      force dut.lwh2f_awid    = drv_awid;
-      force dut.lwh2f_awaddr  = drv_awaddr;
-      force dut.lwh2f_awlen   = drv_awlen;
-      force dut.lwh2f_awsize  = drv_awsize;
-      force dut.lwh2f_awburst = drv_awburst;
-      force dut.lwh2f_awlock  = drv_awlock;
-      force dut.lwh2f_awcache = drv_awcache;
-      force dut.lwh2f_awprot  = drv_awprot;
-      force dut.lwh2f_awvalid = drv_awvalid;
-      force dut.lwh2f_wdata   = drv_wdata;
-      force dut.lwh2f_wstrb   = drv_wstrb;
-      force dut.lwh2f_wlast   = drv_wlast;
-      force dut.lwh2f_wvalid  = drv_wvalid;
-      force dut.lwh2f_bready  = drv_bready;
-      force dut.lwh2f_arid    = drv_arid;
-      force dut.lwh2f_araddr  = drv_araddr;
-      force dut.lwh2f_arlen   = drv_arlen;
-      force dut.lwh2f_arsize  = drv_arsize;
-      force dut.lwh2f_arburst = drv_arburst;
-      force dut.lwh2f_arlock  = drv_arlock;
-      force dut.lwh2f_arcache = drv_arcache;
-      force dut.lwh2f_arprot  = drv_arprot;
-      force dut.lwh2f_arvalid = drv_arvalid;
-      force dut.lwh2f_rready  = drv_rready;
+      force dut.lwhps2fpga_awid    = drv_awid;
+      force dut.lwhps2fpga_awaddr  = drv_awaddr;
+      force dut.lwhps2fpga_awlen   = drv_awlen;
+      force dut.lwhps2fpga_awsize  = drv_awsize;
+      force dut.lwhps2fpga_awburst = drv_awburst;
+      force dut.lwhps2fpga_awlock  = drv_awlock;
+      force dut.lwhps2fpga_awcache = drv_awcache;
+      force dut.lwhps2fpga_awprot  = drv_awprot;
+      force dut.lwhps2fpga_awvalid = drv_awvalid;
+      force dut.lwhps2fpga_wdata   = drv_wdata;
+      force dut.lwhps2fpga_wstrb   = drv_wstrb;
+      force dut.lwhps2fpga_wlast   = drv_wlast;
+      force dut.lwhps2fpga_wvalid  = drv_wvalid;
+      force dut.lwhps2fpga_bready  = drv_bready;
+      force dut.lwhps2fpga_arid    = drv_arid;
+      force dut.lwhps2fpga_araddr  = drv_araddr;
+      force dut.lwhps2fpga_arlen   = drv_arlen;
+      force dut.lwhps2fpga_arsize  = drv_arsize;
+      force dut.lwhps2fpga_arburst = drv_arburst;
+      force dut.lwhps2fpga_arlock  = drv_arlock;
+      force dut.lwhps2fpga_arcache = drv_arcache;
+      force dut.lwhps2fpga_arprot  = drv_arprot;
+      force dut.lwhps2fpga_arvalid = drv_arvalid;
+      force dut.lwhps2fpga_rready  = drv_rready;
    endtask
 
    // Single-beat AXI write. Combinational handshake signals are sampled #1
@@ -313,11 +313,11 @@ module tb
       drv_awaddr = off; drv_awvalid = 1'b1;
       drv_wdata  = data; drv_wstrb = 4'hF; drv_wlast = 1'b1; drv_wvalid = 1'b1;
       drv_bready = 1'b1;
-      while (!dut.lwh2f_awready) begin @(posedge tb_clk_sys); #1; end
+      while (!dut.lwhps2fpga_awready) begin @(posedge tb_clk_sys); #1; end
       @(posedge tb_clk_sys); #1; drv_awvalid = 1'b0;
-      while (!dut.lwh2f_wready)  begin @(posedge tb_clk_sys); #1; end
+      while (!dut.lwhps2fpga_wready)  begin @(posedge tb_clk_sys); #1; end
       @(posedge tb_clk_sys); #1; drv_wvalid = 1'b0;
-      while (!dut.lwh2f_bvalid)  begin @(posedge tb_clk_sys); #1; end
+      while (!dut.lwhps2fpga_bvalid)  begin @(posedge tb_clk_sys); #1; end
       @(posedge tb_clk_sys); #1; drv_bready = 1'b0;
    endtask
 
@@ -325,10 +325,10 @@ module tb
    task automatic csr_read(input logic [28:0] off, output logic [31:0] data);
       @(posedge tb_clk_sys); #1;
       drv_araddr = off; drv_arvalid = 1'b1; drv_rready = 1'b1;
-      while (!dut.lwh2f_arready) begin @(posedge tb_clk_sys); #1; end
+      while (!dut.lwhps2fpga_arready) begin @(posedge tb_clk_sys); #1; end
       @(posedge tb_clk_sys); #1; drv_arvalid = 1'b0;
-      while (!dut.lwh2f_rvalid)  begin @(posedge tb_clk_sys); #1; end
-      data = dut.lwh2f_rdata;
+      while (!dut.lwhps2fpga_rvalid)  begin @(posedge tb_clk_sys); #1; end
+      data = dut.lwhps2fpga_rdata;
       @(posedge tb_clk_sys); #1; drv_rready = 1'b0;
    endtask
 

@@ -16,6 +16,9 @@
 `define ENABLE_LPDDR4A
 `define ENABLE_HPS
 `define ENABLE_HDMI
+//`define ENABLE_FPGA2HPS
+`define ENABLE_FPGA2SDRAM
+//`define ENABLE_HPS2FPGA
 
 module de25_nano_top
   (
@@ -246,101 +249,200 @@ module de25_nano_top
       .reset_in  (rst_sys_in),
       .reset_out (rst_sys));
 
-   (* preserve *) wire                      h2f_reset_reset_buf;
-   (* preserve *) wire                      h2f_warm_reset_handshake_reset_req_buf;
-
-   synchronizer u_h2f_reset_reset_sync
-     (.clk(buf_refclk), .d(h2f_reset_reset), .q(h2f_reset_reset_buf));
-   synchronizer u_h2f_reset_req_sync
-     (.clk(buf_refclk), .d(h2f_warm_reset_handshake_reset_req), .q(h2f_warm_reset_handshake_reset_req_buf));
-
    //
    // HPS Subsystem
    //
 
-   // FPGA2HPS AXI Slave port
-   wire [4:0]                f2h_awid;
-   wire [31:0]               f2h_awaddr;
-   wire [7:0]                f2h_awlen;
-   wire [2:0]                f2h_awsize;
-   wire [1:0]                f2h_awburst;
-   wire                      f2h_awlock;
-   wire [3:0]                f2h_awcache;
-   wire [2:0]                f2h_awprot;
-   wire [3:0]                f2h_awqos = 4'h0;
-   wire                      f2h_awvalid;
-   wire                      f2h_awready;
-   wire [3:0]                f2h_awregion = 4'h0;
-   wire [255:0]              f2h_wdata;
-   wire [31:0]               f2h_wstrb;
-   wire                      f2h_wlast;
-   wire                      f2h_wvalid;
-   wire                      f2h_wready;
-   wire [7:0]                f2h_wuser = 8'h00;
-   wire [4:0]                f2h_bid;
-   wire [1:0]                f2h_bresp;
-   wire                      f2h_bvalid;
-   wire                      f2h_bready;
-   wire [7:0]                f2h_buser;
-   wire [4:0]                f2h_arid;
-   wire [31:0]               f2h_araddr;
-   wire [7:0]                f2h_arlen;
-   wire [2:0]                f2h_arsize;
-   wire [1:0]                f2h_arburst;
-   wire                      f2h_arlock;
-   wire [3:0]                f2h_arcache;
-   wire [2:0]                f2h_arprot;
-   wire [3:0]                f2h_arqos = 4'h1; // Latency sensitive
-   wire                      f2h_arvalid;
-   wire                      f2h_arready;
-   wire [3:0]                f2h_arregion = 4'h0;
-   wire [4:0]                f2h_rid;
-   wire [255:0]              f2h_rdata;
-   wire [1:0]                f2h_rresp;
-   wire                      f2h_rlast;
-   wire                      f2h_rvalid;
-   wire                      f2h_rready;
-   wire [7:0]                f2h_ruser;
+   localparam [ 0:0] AXMMUSECSID = 1'b1;      // Use Secure MMU Context -> SMMU Bypass
+   localparam [15:0] AXMMUSID    = 16'h0010;  // MMU Stream ID (when not secure)
 
    // FPGA2HPS Interrupts
    wire [31:0]               f2h_irq0;
 
-   // LWHPS2FPGA AXI4 Master port (HPS -> FPGA, lightweight)
-   wire [3:0]                lwh2f_awid;
-   wire [28:0]               lwh2f_awaddr;
-   wire [7:0]                lwh2f_awlen;
-   wire [2:0]                lwh2f_awsize;
-   wire [1:0]                lwh2f_awburst;
-   wire                      lwh2f_awlock;
-   wire [3:0]                lwh2f_awcache;
-   wire [2:0]                lwh2f_awprot;
-   wire                      lwh2f_awvalid;
-   wire                      lwh2f_awready;
-   wire [31:0]               lwh2f_wdata;
-   wire [3:0]                lwh2f_wstrb;
-   wire                      lwh2f_wlast;
-   wire                      lwh2f_wvalid;
-   wire                      lwh2f_wready;
-   wire [3:0]                lwh2f_bid;
-   wire [1:0]                lwh2f_bresp;
-   wire                      lwh2f_bvalid;
-   wire                      lwh2f_bready;
-   wire [3:0]                lwh2f_arid;
-   wire [28:0]               lwh2f_araddr;
-   wire [7:0]                lwh2f_arlen;
-   wire [2:0]                lwh2f_arsize;
-   wire [1:0]                lwh2f_arburst;
-   wire                      lwh2f_arlock;
-   wire [3:0]                lwh2f_arcache;
-   wire [2:0]                lwh2f_arprot;
-   wire                      lwh2f_arvalid;
-   wire                      lwh2f_arready;
-   wire [3:0]                lwh2f_rid;
-   wire [31:0]               lwh2f_rdata;
-   wire [1:0]                lwh2f_rresp;
-   wire                      lwh2f_rlast;
-   wire                      lwh2f_rvalid;
-   wire                      lwh2f_rready;
+`ifdef ENABLE_FPGA2HPS
+   // FPGA2HPS ACE5Lite Slave port (FPGA -> HPS; 256-bit data, 32-bit addr)
+   wire [4:0]                fpga2hps_awid;
+   wire [31:0]               fpga2hps_awaddr;
+   wire [3:0]                fpga2hps_awregion = 4'h0;
+   wire [1:0]                fpga2hps_awdomain = 2'b01;
+   wire [3:0]                fpga2hps_awsnoop = 4'h0;
+   wire [7:0]                fpga2hps_awlen;
+   wire [2:0]                fpga2hps_awsize;
+   wire [2:0]                fpga2hps_arsize;
+   wire [1:0]                fpga2hps_awburst;
+   wire                      fpga2hps_awlock;
+   wire [3:0]                fpga2hps_awcache;
+   wire [2:0]                fpga2hps_awprot;
+   wire [3:0]                fpga2hps_awqos = 4'h0;
+   wire [7:0]                fpga2hps_awuser = 8'h04; // To CCS
+   wire [10:0]               fpga2hps_awstashnid = 11'h0;
+   wire                      fpga2hps_awstashniden = 1'b0;
+   wire [4:0]                fpga2hps_awstashlpid = 5'h0;
+   wire                      fpga2hps_awstashlpiden = 1'b0;
+   wire [5:0]                fpga2hps_awatop = 6'h0;
+   wire                      fpga2hps_awmmusecsid = AXMMUSECSID;
+   wire [15:0]               fpga2hps_awmmusid = AXMMUSID;
+   wire                      fpga2hps_awvalid;
+   wire                      fpga2hps_awready;
+   wire [255:0]              fpga2hps_wdata;
+   wire [31:0]               fpga2hps_wstrb;
+   wire                      fpga2hps_wlast;
+   wire [7:0]                fpga2hps_wuser = 8'h04;
+   wire                      fpga2hps_wvalid;
+   wire                      fpga2hps_wready;
+   wire [4:0]                fpga2hps_bid;
+   wire [1:0]                fpga2hps_bresp;
+   wire [7:0]                fpga2hps_buser;
+   wire                      fpga2hps_bvalid;
+   wire                      fpga2hps_bready;
+   wire [4:0]                fpga2hps_arid;
+   wire [31:0]               fpga2hps_araddr;
+   wire [3:0]                fpga2hps_arregion = 4'h0;
+   wire [1:0]                fpga2hps_ardomain = 2'b01;
+   wire [3:0]                fpga2hps_arsnoop = 4'h0;
+   wire [7:0]                fpga2hps_arlen;
+   wire [1:0]                fpga2hps_arburst;
+   wire                      fpga2hps_arlock;
+   wire [3:0]                fpga2hps_arcache;
+   wire [2:0]                fpga2hps_arprot;
+   wire [3:0]                fpga2hps_arqos = 4'hf; // Latency sensitive
+   wire [7:0]                fpga2hps_aruser = 8'h04; // To CCS
+   wire                      fpga2hps_armmusecsid = AXMMUSECSID;
+   wire [15:0]               fpga2hps_armmusid = AXMMUSID;
+   wire                      fpga2hps_arvalid;
+   wire                      fpga2hps_arready;
+   wire [4:0]                fpga2hps_rid;
+   wire [255:0]              fpga2hps_rdata;
+   wire [1:0]                fpga2hps_rresp;
+   wire                      fpga2hps_rlast;
+   wire [7:0]                fpga2hps_ruser;
+   wire                      fpga2hps_rvalid;
+   wire                      fpga2hps_rready;
+`endif //  `ifdef ENABLE_FPGA2HPS
+
+`ifdef ENABLE_FPGA2SDRAM
+   // FPGA2SDRAM AXI4 Slave port (FPGA -> SDRAM; 256-bit data, 32-bit addr)
+   wire [4:0]                f2sdram_awid;
+   wire [31:0]               f2sdram_awaddr;
+   wire [3:0]                f2sdram_awregion = 4'h0;
+   wire [7:0]                f2sdram_awlen;
+   wire [2:0]                f2sdram_awsize;
+   wire [1:0]                f2sdram_awburst;
+   wire                      f2sdram_awlock;
+   wire [3:0]                f2sdram_awcache;
+   wire [2:0]                f2sdram_awprot;
+   wire [3:0]                f2sdram_awqos = 4'h0;
+   wire [24:0]               f2sdram_awuser = {AXMMUSID, AXMMUSECSID, 8'hE0};
+   wire                      f2sdram_awvalid;
+   wire                      f2sdram_awready;
+   wire [255:0]              f2sdram_wdata;
+   wire [31:0]               f2sdram_wstrb;
+   wire                      f2sdram_wlast;
+   wire [7:0]                f2sdram_wuser = 8'h00;
+   wire                      f2sdram_wvalid;
+   wire                      f2sdram_wready;
+   wire [4:0]                f2sdram_bid;
+   wire [1:0]                f2sdram_bresp;
+   wire [7:0]                f2sdram_buser;
+   wire                      f2sdram_bvalid;
+   wire                      f2sdram_bready;
+   wire [4:0]                f2sdram_arid;
+   wire [31:0]               f2sdram_araddr;
+   wire [3:0]                f2sdram_arregion = 4'h0;
+   wire [7:0]                f2sdram_arlen;
+   wire [2:0]                f2sdram_arsize;
+   wire [1:0]                f2sdram_arburst;
+   wire                      f2sdram_arlock;
+   wire [3:0]                f2sdram_arcache;
+   wire [2:0]                f2sdram_arprot;
+   wire [3:0]                f2sdram_arqos = 4'hf; // Latency sensitive
+   wire [24:0]               f2sdram_aruser = {AXMMUSID, AXMMUSECSID, 8'hE0};
+   wire                      f2sdram_arvalid;
+   wire                      f2sdram_arready;
+   wire [4:0]                f2sdram_rid;
+   wire [255:0]              f2sdram_rdata;
+   wire [1:0]                f2sdram_rresp;
+   wire                      f2sdram_rlast;
+   wire [7:0]                f2sdram_ruser;
+   wire                      f2sdram_rvalid;
+   wire                      f2sdram_rready;
+`endif //  `ifdef ENABLE_FPGA2SDRAM
+
+`ifdef ENABLE_HPS2FPGA
+   // HPS2FPGA AXI4 Master port (HPS -> FPGA; 128-bit data, 32-bit addr)
+   wire [3:0]                hps2fpga_awid;
+   wire [31:0]               hps2fpga_awaddr;
+   wire [7:0]                hps2fpga_awlen;
+   wire [2:0]                hps2fpga_awsize;
+   wire [1:0]                hps2fpga_awburst;
+   wire                      hps2fpga_awlock;
+   wire [3:0]                hps2fpga_awcache;
+   wire [2:0]                hps2fpga_awprot;
+   wire                      hps2fpga_awvalid;
+   wire                      hps2fpga_awready = 1'b0;
+   wire [127:0]              hps2fpga_wdata;
+   wire [15:0]               hps2fpga_wstrb;
+   wire                      hps2fpga_wlast;
+   wire                      hps2fpga_wvalid;
+   wire                      hps2fpga_wready = 1'b0;
+   wire [3:0]                hps2fpga_bid = 4'h0;
+   wire [1:0]                hps2fpga_bresp = 2'b00;
+   wire                      hps2fpga_bvalid = 1'b0;
+   wire                      hps2fpga_bready;
+   wire [3:0]                hps2fpga_arid;
+   wire [31:0]               hps2fpga_araddr;
+   wire [7:0]                hps2fpga_arlen;
+   wire [2:0]                hps2fpga_arsize;
+   wire [1:0]                hps2fpga_arburst;
+   wire                      hps2fpga_arlock;
+   wire [3:0]                hps2fpga_arcache;
+   wire [2:0]                hps2fpga_arprot;
+   wire                      hps2fpga_arvalid;
+   wire                      hps2fpga_arready = 1'b0;
+   wire [3:0]                hps2fpga_rid = 4'h0;
+   wire [127:0]              hps2fpga_rdata = 128'h0;
+   wire [1:0]                hps2fpga_rresp = 2'b00;
+   wire                      hps2fpga_rlast = 1'b0;
+   wire                      hps2fpga_rvalid = 1'b0;
+   wire                      hps2fpga_rready;
+`endif //  `ifdef ENABLE_HPS2FPGA
+
+   // LWHPS2FPGA AXI4 Master port (HPS -> FPGA, lightweight; 32-bit data, 29-bit addr)
+   wire [3:0]                lwhps2fpga_awid;
+   wire [28:0]               lwhps2fpga_awaddr;
+   wire [7:0]                lwhps2fpga_awlen;
+   wire [2:0]                lwhps2fpga_awsize;
+   wire [1:0]                lwhps2fpga_awburst;
+   wire                      lwhps2fpga_awlock;
+   wire [3:0]                lwhps2fpga_awcache;
+   wire [2:0]                lwhps2fpga_awprot;
+   wire                      lwhps2fpga_awvalid;
+   wire                      lwhps2fpga_awready;
+   wire [31:0]               lwhps2fpga_wdata;
+   wire [3:0]                lwhps2fpga_wstrb;
+   wire                      lwhps2fpga_wlast;
+   wire                      lwhps2fpga_wvalid;
+   wire                      lwhps2fpga_wready;
+   wire [3:0]                lwhps2fpga_bid;
+   wire [1:0]                lwhps2fpga_bresp;
+   wire                      lwhps2fpga_bvalid;
+   wire                      lwhps2fpga_bready;
+   wire [3:0]                lwhps2fpga_arid;
+   wire [28:0]               lwhps2fpga_araddr;
+   wire [7:0]                lwhps2fpga_arlen;
+   wire [2:0]                lwhps2fpga_arsize;
+   wire [1:0]                lwhps2fpga_arburst;
+   wire                      lwhps2fpga_arlock;
+   wire [3:0]                lwhps2fpga_arcache;
+   wire [2:0]                lwhps2fpga_arprot;
+   wire                      lwhps2fpga_arvalid;
+   wire                      lwhps2fpga_arready;
+   wire [3:0]                lwhps2fpga_rid;
+   wire [31:0]               lwhps2fpga_rdata;
+   wire [1:0]                lwhps2fpga_rresp;
+   wire                      lwhps2fpga_rlast;
+   wire                      lwhps2fpga_rvalid;
+   wire                      lwhps2fpga_rready;
 
    hps_wrapper u_hps_wrapper
      (.clk_sys,
@@ -348,85 +450,187 @@ module de25_nano_top
       .h2f_reset_reset,
       .h2f_warm_reset_handshake_reset_req,
       .h2f_warm_reset_handshake_reset_ack,
+`ifdef ENABLE_FPGA2HPS
       //
-      .f2h_awid,
-      .f2h_awaddr,
-      .f2h_awlen,
-      .f2h_awsize,
-      .f2h_awburst,
-      .f2h_awlock,
-      .f2h_awcache,
-      .f2h_awprot,
-      .f2h_awqos,
-      .f2h_awvalid,
-      .f2h_awready,
-      .f2h_awregion,
-      .f2h_wdata,
-      .f2h_wstrb,
-      .f2h_wlast,
-      .f2h_wvalid,
-      .f2h_wready,
-      .f2h_wuser,
-      .f2h_bid,
-      .f2h_bresp,
-      .f2h_bvalid,
-      .f2h_bready,
-      .f2h_buser,
-      .f2h_arid,
-      .f2h_araddr,
-      .f2h_arlen,
-      .f2h_arsize,
-      .f2h_arburst,
-      .f2h_arlock,
-      .f2h_arcache,
-      .f2h_arprot,
-      .f2h_arqos,
-      .f2h_arvalid,
-      .f2h_arready,
-      .f2h_arregion,
-      .f2h_rid,
-      .f2h_rdata,
-      .f2h_rresp,
-      .f2h_rlast,
-      .f2h_rvalid,
-      .f2h_rready,
-      .f2h_ruser,
+      .fpga2hps_awid,
+      .fpga2hps_awaddr,
+      .fpga2hps_awregion,
+      .fpga2hps_awdomain,
+      .fpga2hps_awsnoop,
+      .fpga2hps_awlen,
+      .fpga2hps_awsize,
+      .fpga2hps_awburst,
+      .fpga2hps_awlock,
+      .fpga2hps_awcache,
+      .fpga2hps_awprot,
+      .fpga2hps_awqos,
+      .fpga2hps_awuser,
+      .fpga2hps_awstashnid,
+      .fpga2hps_awstashniden,
+      .fpga2hps_awstashlpid,
+      .fpga2hps_awstashlpiden,
+      .fpga2hps_awatop,
+      .fpga2hps_awmmusecsid,
+      .fpga2hps_awmmusid,
+      .fpga2hps_awvalid,
+      .fpga2hps_awready,
+      .fpga2hps_wdata,
+      .fpga2hps_wstrb,
+      .fpga2hps_wlast,
+      .fpga2hps_wuser,
+      .fpga2hps_wvalid,
+      .fpga2hps_wready,
+      .fpga2hps_bid,
+      .fpga2hps_bresp,
+      .fpga2hps_buser,
+      .fpga2hps_bvalid,
+      .fpga2hps_bready,
+      .fpga2hps_arid,
+      .fpga2hps_araddr,
+      .fpga2hps_arregion,
+      .fpga2hps_ardomain,
+      .fpga2hps_arsnoop,
+      .fpga2hps_arlen,
+      .fpga2hps_arsize,
+      .fpga2hps_arburst,
+      .fpga2hps_arlock,
+      .fpga2hps_arcache,
+      .fpga2hps_arprot,
+      .fpga2hps_arqos,
+      .fpga2hps_aruser,
+      .fpga2hps_armmusecsid,
+      .fpga2hps_armmusid,
+      .fpga2hps_arvalid,
+      .fpga2hps_arready,
+      .fpga2hps_rid,
+      .fpga2hps_rdata,
+      .fpga2hps_rresp,
+      .fpga2hps_rlast,
+      .fpga2hps_ruser,
+      .fpga2hps_rvalid,
+      .fpga2hps_rready,
+`endif //  `ifdef ENABLE_FPGA2HPS
+`ifdef ENABLE_FPGA2SDRAM
       //
-      .lwh2f_awid,
-      .lwh2f_awaddr,
-      .lwh2f_awlen,
-      .lwh2f_awsize,
-      .lwh2f_awburst,
-      .lwh2f_awlock,
-      .lwh2f_awcache,
-      .lwh2f_awprot,
-      .lwh2f_awvalid,
-      .lwh2f_awready,
-      .lwh2f_wdata,
-      .lwh2f_wstrb,
-      .lwh2f_wlast,
-      .lwh2f_wvalid,
-      .lwh2f_wready,
-      .lwh2f_bid,
-      .lwh2f_bresp,
-      .lwh2f_bvalid,
-      .lwh2f_bready,
-      .lwh2f_arid,
-      .lwh2f_araddr,
-      .lwh2f_arlen,
-      .lwh2f_arsize,
-      .lwh2f_arburst,
-      .lwh2f_arlock,
-      .lwh2f_arcache,
-      .lwh2f_arprot,
-      .lwh2f_arvalid,
-      .lwh2f_arready,
-      .lwh2f_rid,
-      .lwh2f_rdata,
-      .lwh2f_rresp,
-      .lwh2f_rlast,
-      .lwh2f_rvalid,
-      .lwh2f_rready,
+      .f2sdram_awid,
+      .f2sdram_awaddr,
+      .f2sdram_awregion,
+      .f2sdram_awlen,
+      .f2sdram_awsize,
+      .f2sdram_awburst,
+      .f2sdram_awlock,
+      .f2sdram_awcache,
+      .f2sdram_awprot,
+      .f2sdram_awqos,
+      .f2sdram_awuser,
+      .f2sdram_awvalid,
+      .f2sdram_awready,
+      .f2sdram_wdata,
+      .f2sdram_wstrb,
+      .f2sdram_wlast,
+      .f2sdram_wuser,
+      .f2sdram_wvalid,
+      .f2sdram_wready,
+      .f2sdram_bid,
+      .f2sdram_bresp,
+      .f2sdram_buser,
+      .f2sdram_bvalid,
+      .f2sdram_bready,
+      .f2sdram_arid,
+      .f2sdram_araddr,
+      .f2sdram_arregion,
+      .f2sdram_arlen,
+      .f2sdram_arsize,
+      .f2sdram_arburst,
+      .f2sdram_arlock,
+      .f2sdram_arcache,
+      .f2sdram_arprot,
+      .f2sdram_arqos,
+      .f2sdram_aruser,
+      .f2sdram_arvalid,
+      .f2sdram_arready,
+      .f2sdram_rid,
+      .f2sdram_rdata,
+      .f2sdram_rresp,
+      .f2sdram_rlast,
+      .f2sdram_ruser,
+      .f2sdram_rvalid,
+      .f2sdram_rready,
+`endif //  `ifdef ENABLE_FPGA2SDRAM
+`ifdef ENABLE_HPS2FPGA
+      //
+      .hps2fpga_awid,
+      .hps2fpga_awaddr,
+      .hps2fpga_awlen,
+      .hps2fpga_awsize,
+      .hps2fpga_awburst,
+      .hps2fpga_awlock,
+      .hps2fpga_awcache,
+      .hps2fpga_awprot,
+      .hps2fpga_awvalid,
+      .hps2fpga_awready,
+      .hps2fpga_wdata,
+      .hps2fpga_wstrb,
+      .hps2fpga_wlast,
+      .hps2fpga_wvalid,
+      .hps2fpga_wready,
+      .hps2fpga_bid,
+      .hps2fpga_bresp,
+      .hps2fpga_bvalid,
+      .hps2fpga_bready,
+      .hps2fpga_arid,
+      .hps2fpga_araddr,
+      .hps2fpga_arlen,
+      .hps2fpga_arsize,
+      .hps2fpga_arburst,
+      .hps2fpga_arlock,
+      .hps2fpga_arcache,
+      .hps2fpga_arprot,
+      .hps2fpga_arvalid,
+      .hps2fpga_arready,
+      .hps2fpga_rid,
+      .hps2fpga_rdata,
+      .hps2fpga_rresp,
+      .hps2fpga_rlast,
+      .hps2fpga_rvalid,
+      .hps2fpga_rready,
+`endif //  `ifdef ENABLE_HPS2FPGA
+      //
+      .lwhps2fpga_awid,
+      .lwhps2fpga_awaddr,
+      .lwhps2fpga_awlen,
+      .lwhps2fpga_awsize,
+      .lwhps2fpga_awburst,
+      .lwhps2fpga_awlock,
+      .lwhps2fpga_awcache,
+      .lwhps2fpga_awprot,
+      .lwhps2fpga_awvalid,
+      .lwhps2fpga_awready,
+      .lwhps2fpga_wdata,
+      .lwhps2fpga_wstrb,
+      .lwhps2fpga_wlast,
+      .lwhps2fpga_wvalid,
+      .lwhps2fpga_wready,
+      .lwhps2fpga_bid,
+      .lwhps2fpga_bresp,
+      .lwhps2fpga_bvalid,
+      .lwhps2fpga_bready,
+      .lwhps2fpga_arid,
+      .lwhps2fpga_araddr,
+      .lwhps2fpga_arlen,
+      .lwhps2fpga_arsize,
+      .lwhps2fpga_arburst,
+      .lwhps2fpga_arlock,
+      .lwhps2fpga_arcache,
+      .lwhps2fpga_arprot,
+      .lwhps2fpga_arvalid,
+      .lwhps2fpga_arready,
+      .lwhps2fpga_rid,
+      .lwhps2fpga_rdata,
+      .lwhps2fpga_rresp,
+      .lwhps2fpga_rlast,
+      .lwhps2fpga_rvalid,
+      .lwhps2fpga_rready,
       //
       .hps_io_hps_osc_clk        (HPS_CLK_25),
       .hps_io_mdio0_mdc          (HPS_ENET_MDC),
@@ -485,7 +689,7 @@ module de25_nano_top
       );
 
    //
-   // Control-plane bridge: lwh2f AXI4 -> video controller cfg bus
+   // Control-plane bridge: lwhps2fpga AXI4 -> video controller cfg bus
    //
 
    wire                      cfg_req, cmd_req;
@@ -499,41 +703,41 @@ module de25_nano_top
    lw_ctrl_bridge u_lw_ctrl_bridge
      (.clk            (clk_sys),
       .rst            (rst_sys),
-      .s_axi_awid     (lwh2f_awid),
-      .s_axi_awaddr   (lwh2f_awaddr),
-      .s_axi_awlen    (lwh2f_awlen),
-      .s_axi_awsize   (lwh2f_awsize),
-      .s_axi_awburst  (lwh2f_awburst),
-      .s_axi_awlock   (lwh2f_awlock),
-      .s_axi_awcache  (lwh2f_awcache),
-      .s_axi_awprot   (lwh2f_awprot),
-      .s_axi_awvalid  (lwh2f_awvalid),
-      .s_axi_awready  (lwh2f_awready),
-      .s_axi_wdata    (lwh2f_wdata),
-      .s_axi_wstrb    (lwh2f_wstrb),
-      .s_axi_wlast    (lwh2f_wlast),
-      .s_axi_wvalid   (lwh2f_wvalid),
-      .s_axi_wready   (lwh2f_wready),
-      .s_axi_bid      (lwh2f_bid),
-      .s_axi_bresp    (lwh2f_bresp),
-      .s_axi_bvalid   (lwh2f_bvalid),
-      .s_axi_bready   (lwh2f_bready),
-      .s_axi_arid     (lwh2f_arid),
-      .s_axi_araddr   (lwh2f_araddr),
-      .s_axi_arlen    (lwh2f_arlen),
-      .s_axi_arsize   (lwh2f_arsize),
-      .s_axi_arburst  (lwh2f_arburst),
-      .s_axi_arlock   (lwh2f_arlock),
-      .s_axi_arcache  (lwh2f_arcache),
-      .s_axi_arprot   (lwh2f_arprot),
-      .s_axi_arvalid  (lwh2f_arvalid),
-      .s_axi_arready  (lwh2f_arready),
-      .s_axi_rid      (lwh2f_rid),
-      .s_axi_rdata    (lwh2f_rdata),
-      .s_axi_rresp    (lwh2f_rresp),
-      .s_axi_rlast    (lwh2f_rlast),
-      .s_axi_rvalid   (lwh2f_rvalid),
-      .s_axi_rready   (lwh2f_rready),
+      .s_axi_awid     (lwhps2fpga_awid),
+      .s_axi_awaddr   (lwhps2fpga_awaddr),
+      .s_axi_awlen    (lwhps2fpga_awlen),
+      .s_axi_awsize   (lwhps2fpga_awsize),
+      .s_axi_awburst  (lwhps2fpga_awburst),
+      .s_axi_awlock   (lwhps2fpga_awlock),
+      .s_axi_awcache  (lwhps2fpga_awcache),
+      .s_axi_awprot   (lwhps2fpga_awprot),
+      .s_axi_awvalid  (lwhps2fpga_awvalid),
+      .s_axi_awready  (lwhps2fpga_awready),
+      .s_axi_wdata    (lwhps2fpga_wdata),
+      .s_axi_wstrb    (lwhps2fpga_wstrb),
+      .s_axi_wlast    (lwhps2fpga_wlast),
+      .s_axi_wvalid   (lwhps2fpga_wvalid),
+      .s_axi_wready   (lwhps2fpga_wready),
+      .s_axi_bid      (lwhps2fpga_bid),
+      .s_axi_bresp    (lwhps2fpga_bresp),
+      .s_axi_bvalid   (lwhps2fpga_bvalid),
+      .s_axi_bready   (lwhps2fpga_bready),
+      .s_axi_arid     (lwhps2fpga_arid),
+      .s_axi_araddr   (lwhps2fpga_araddr),
+      .s_axi_arlen    (lwhps2fpga_arlen),
+      .s_axi_arsize   (lwhps2fpga_arsize),
+      .s_axi_arburst  (lwhps2fpga_arburst),
+      .s_axi_arlock   (lwhps2fpga_arlock),
+      .s_axi_arcache  (lwhps2fpga_arcache),
+      .s_axi_arprot   (lwhps2fpga_arprot),
+      .s_axi_arvalid  (lwhps2fpga_arvalid),
+      .s_axi_arready  (lwhps2fpga_arready),
+      .s_axi_rid      (lwhps2fpga_rid),
+      .s_axi_rdata    (lwhps2fpga_rdata),
+      .s_axi_rresp    (lwhps2fpga_rresp),
+      .s_axi_rlast    (lwhps2fpga_rlast),
+      .s_axi_rvalid   (lwhps2fpga_rvalid),
+      .s_axi_rready   (lwhps2fpga_rready),
       // video controller config bus
       .cfg_req,
       .cfg_adr,
@@ -792,11 +996,84 @@ module de25_nano_top
       .FB_DATA_WIDTH  (VR_DATAW),
       .FB_ADDR_WIDTH  (VR_ADDRW),
       .ID_WIDTH       (5),
-      .BURST_LEN      (8),
-      .FIFO_LGDEPTH   (6))
+      .BURST_LEN      (16), // DATA_WIDTH=256, BURST_LEN=16 -> 512Byte per burst
+      .FIFO_LGDEPTH   (9))  // DATA_WIDTH=256, 512 entries -> 16KiB
    u_vctrl_axim
      (.clk           (clk_sys),
       .rst           (rst_sys),
+`ifdef ENABLE_FPGA2HPS
+      .m_axi_arid    (fpga2hps_arid),
+      .m_axi_araddr  (fpga2hps_araddr),
+      .m_axi_arlen   (fpga2hps_arlen),
+      .m_axi_arsize  (fpga2hps_arsize),
+      .m_axi_arburst (fpga2hps_arburst),
+      .m_axi_arlock  (fpga2hps_arlock),
+      .m_axi_arcache (fpga2hps_arcache),
+      .m_axi_arprot  (fpga2hps_arprot),
+      .m_axi_arvalid (fpga2hps_arvalid),
+      .m_axi_arready (fpga2hps_arready),
+      .m_axi_rid     (fpga2hps_rid),
+      .m_axi_rdata   (fpga2hps_rdata),
+      .m_axi_rresp   (fpga2hps_rresp),
+      .m_axi_rlast   (fpga2hps_rlast),
+      .m_axi_rvalid  (fpga2hps_rvalid),
+      .m_axi_rready  (fpga2hps_rready),
+      .m_axi_awid    (fpga2hps_awid),
+      .m_axi_awaddr  (fpga2hps_awaddr),
+      .m_axi_awlen   (fpga2hps_awlen),
+      .m_axi_awsize  (fpga2hps_awsize),
+      .m_axi_awburst (fpga2hps_awburst),
+      .m_axi_awlock  (fpga2hps_awlock),
+      .m_axi_awcache (fpga2hps_awcache),
+      .m_axi_awprot  (fpga2hps_awprot),
+      .m_axi_awvalid (fpga2hps_awvalid),
+      .m_axi_awready (fpga2hps_awready),
+      .m_axi_wdata   (fpga2hps_wdata),
+      .m_axi_wstrb   (fpga2hps_wstrb),
+      .m_axi_wlast   (fpga2hps_wlast),
+      .m_axi_wvalid  (fpga2hps_wvalid),
+      .m_axi_wready  (fpga2hps_wready),
+      .m_axi_bid     (fpga2hps_bid),
+      .m_axi_bresp   (fpga2hps_bresp),
+      .m_axi_bvalid  (fpga2hps_bvalid),
+      .m_axi_bready  (fpga2hps_bready),
+`else // !`ifdef ENABLE_FPGA2HPS
+      .m_axi_arid    (f2sdram_arid),
+      .m_axi_araddr  (f2sdram_araddr),
+      .m_axi_arlen   (f2sdram_arlen),
+      .m_axi_arsize  (f2sdram_arsize),
+      .m_axi_arburst (f2sdram_arburst),
+      .m_axi_arlock  (f2sdram_arlock),
+      .m_axi_arcache (f2sdram_arcache),
+      .m_axi_arprot  (f2sdram_arprot),
+      .m_axi_arvalid (f2sdram_arvalid),
+      .m_axi_arready (f2sdram_arready),
+      .m_axi_rid     (f2sdram_rid),
+      .m_axi_rdata   (f2sdram_rdata),
+      .m_axi_rresp   (f2sdram_rresp),
+      .m_axi_rlast   (f2sdram_rlast),
+      .m_axi_rvalid  (f2sdram_rvalid),
+      .m_axi_rready  (f2sdram_rready),
+      .m_axi_awid    (f2sdram_awid),
+      .m_axi_awaddr  (f2sdram_awaddr),
+      .m_axi_awlen   (f2sdram_awlen),
+      .m_axi_awsize  (f2sdram_awsize),
+      .m_axi_awburst (f2sdram_awburst),
+      .m_axi_awlock  (f2sdram_awlock),
+      .m_axi_awcache (f2sdram_awcache),
+      .m_axi_awprot  (f2sdram_awprot),
+      .m_axi_awvalid (f2sdram_awvalid),
+      .m_axi_awready (f2sdram_awready),
+      .m_axi_wdata   (f2sdram_wdata),
+      .m_axi_wstrb   (f2sdram_wstrb),
+      .m_axi_wlast   (f2sdram_wlast),
+      .m_axi_wvalid  (f2sdram_wvalid),
+      .m_axi_wready  (f2sdram_wready),
+      .m_axi_bid     (f2sdram_bid),
+      .m_axi_bresp   (f2sdram_bresp),
+      .m_axi_bvalid  (f2sdram_bvalid),
+      .m_axi_bready  (f2sdram_bready),
+`endif // !`ifdef ENABLE_FPGA2HPS
       .frame_sys,
       .fb_base,
       .fb_size,
@@ -806,42 +1083,7 @@ module de25_nano_top
       .fb_raddr,
       .fb_rdack,
       .fb_rdata,
-      .fb_rvalid,
-      .m_axi_arid    (f2h_arid),
-      .m_axi_araddr  (f2h_araddr),
-      .m_axi_arlen   (f2h_arlen),
-      .m_axi_arsize  (f2h_arsize),
-      .m_axi_arburst (f2h_arburst),
-      .m_axi_arlock  (f2h_arlock),
-      .m_axi_arcache (f2h_arcache),
-      .m_axi_arprot  (f2h_arprot),
-      .m_axi_arvalid (f2h_arvalid),
-      .m_axi_arready (f2h_arready),
-      .m_axi_rid     (f2h_rid),
-      .m_axi_rdata   (f2h_rdata),
-      .m_axi_rresp   (f2h_rresp),
-      .m_axi_rlast   (f2h_rlast),
-      .m_axi_rvalid  (f2h_rvalid),
-      .m_axi_rready  (f2h_rready),
-      .m_axi_awid    (f2h_awid),
-      .m_axi_awaddr  (f2h_awaddr),
-      .m_axi_awlen   (f2h_awlen),
-      .m_axi_awsize  (f2h_awsize),
-      .m_axi_awburst (f2h_awburst),
-      .m_axi_awlock  (f2h_awlock),
-      .m_axi_awcache (f2h_awcache),
-      .m_axi_awprot  (f2h_awprot),
-      .m_axi_awvalid (f2h_awvalid),
-      .m_axi_awready (f2h_awready),
-      .m_axi_wdata   (f2h_wdata),
-      .m_axi_wstrb   (f2h_wstrb),
-      .m_axi_wlast   (f2h_wlast),
-      .m_axi_wvalid  (f2h_wvalid),
-      .m_axi_wready  (f2h_wready),
-      .m_axi_bid     (f2h_bid),
-      .m_axi_bresp   (f2h_bresp),
-      .m_axi_bvalid  (f2h_bvalid),
-      .m_axi_bready  (f2h_bready)
+      .fb_rvalid
       );
 
    // HDMI Transmitter outputs

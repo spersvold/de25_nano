@@ -2,7 +2,7 @@ echo "Trying to boot Linux from device ${target}";
 
 if test ${target} = "mmc0"; then
         echo "Found kernel in mmc0";
-        bridge enable 0x6;
+        bridge enable;
         mmc rescan;
         fatload mmc 0:1 ${kernel_addr_r} Image;
         fatload mmc 0:1 ${fdt_addr_r} socfpga_agilex5_de25_nano.dtb;

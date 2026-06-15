@@ -49,12 +49,15 @@ set_global_assignment -name IP_FILE ip/core_pll.ip
 set_global_assignment -name IP_FILE ip/hdmi_pll.ip
 set_global_assignment -name IP_FILE ip/agilex_hps.ip
 set_global_assignment -name IP_FILE ip/emif_io96b_hps.ip
-set_global_assignment -name IP_FILE ip/ace5_translate.ip
+#set_global_assignment -name IP_FILE ip/ace5_translate.ip
 
 # Add our RTL
 #============================================================
 # Define vendor (for bram inference)
 set_global_assignment -name VERILOG_MACRO "VENDOR_ALTERA=1"
+#set_global_assignment -name VERILOG_MACRO "ENABLE_FPGA2HPS=1"
+set_global_assignment -name VERILOG_MACRO "ENABLE_FPGA2SDRAM=1"
+#set_global_assignment -name VERILOG_MACRO "ENABLE_HPS2FPGA=1"
 
 # Common library files
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/bram_pkg.sv

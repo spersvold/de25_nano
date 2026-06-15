@@ -23,95 +23,209 @@ module hps_wrapper
    ,output wire         h2f_warm_reset_handshake_reset_req
    // HPS warm reset acknowledge response to SDM. Should be asserted when all HPS soft logic is successfully in reset.
    ,input  wire         h2f_warm_reset_handshake_reset_ack
-   // FPGA2HPS AXI Slave port (FPGA -> HPS; 256-bit data, 32-bit addr)
+   // FPGA-to-HPS interrupt requests, lower 32 bits (irq0[x] -> GIC SPI 17+x).
+   ,input  wire [31:0]  f2h_irq0
+`ifdef ENABLE_FPGA2HPS
+   // FPGA2HPS ACE5Lite Slave port (FPGA -> HPS; 256-bit data, 32-bit addr)
    // AW channel
-   ,input  wire [4:0]   f2h_awid
-   ,input  wire [31:0]  f2h_awaddr
-   ,input  wire [7:0]   f2h_awlen
-   ,input  wire [2:0]   f2h_awsize
-   ,input  wire [1:0]   f2h_awburst
-   ,input  wire         f2h_awlock
-   ,input  wire [3:0]   f2h_awcache
-   ,input  wire [2:0]   f2h_awprot
-   ,input  wire [3:0]   f2h_awqos
-   ,input  wire         f2h_awvalid
-   ,output wire         f2h_awready
-   ,input  wire [3:0]   f2h_awregion
+   ,input  wire [4:0]   fpga2hps_awid
+   ,input  wire [31:0]  fpga2hps_awaddr
+   ,input  wire [3:0]   fpga2hps_awregion
+   ,input  wire [1:0]   fpga2hps_awdomain
+   ,input  wire [3:0]   fpga2hps_awsnoop
+   ,input  wire [7:0]   fpga2hps_awlen
+   ,input  wire [2:0]   fpga2hps_awsize
+   ,input  wire [2:0]   fpga2hps_arsize
+   ,input  wire [1:0]   fpga2hps_awburst
+   ,input  wire         fpga2hps_awlock
+   ,input  wire [3:0]   fpga2hps_awcache
+   ,input  wire [2:0]   fpga2hps_awprot
+   ,input  wire [3:0]   fpga2hps_awqos
+   ,input  wire [7:0]   fpga2hps_awuser
+   ,input  wire [10:0]  fpga2hps_awstashnid
+   ,input  wire         fpga2hps_awstashniden
+   ,input  wire [4:0]   fpga2hps_awstashlpid
+   ,input  wire         fpga2hps_awstashlpiden
+   ,input  wire [5:0]   fpga2hps_awatop
+   ,input  wire         fpga2hps_awmmusecsid
+   ,input  wire [15:0]  fpga2hps_awmmusid
+   ,input  wire         fpga2hps_awvalid
+   ,output wire         fpga2hps_awready
    // W channel
-   ,input  wire [255:0] f2h_wdata
-   ,input  wire [31:0]  f2h_wstrb
-   ,input  wire         f2h_wlast
-   ,input  wire         f2h_wvalid
-   ,output wire         f2h_wready
-   ,input  wire [7:0]   f2h_wuser
+   ,input  wire [255:0] fpga2hps_wdata
+   ,input  wire [31:0]  fpga2hps_wstrb
+   ,input  wire         fpga2hps_wlast
+   ,input  wire [7:0]   fpga2hps_wuser
+   ,input  wire         fpga2hps_wvalid
+   ,output wire         fpga2hps_wready
    // B channel
-   ,output wire [4:0]   f2h_bid
-   ,output wire [1:0]   f2h_bresp
-   ,output wire         f2h_bvalid
-   ,input  wire         f2h_bready
-   ,output wire [7:0]   f2h_buser
+   ,output wire [4:0]   fpga2hps_bid
+   ,output wire [1:0]   fpga2hps_bresp
+   ,output wire [7:0]   fpga2hps_buser
+   ,output wire         fpga2hps_bvalid
+   ,input  wire         fpga2hps_bready
    // AR channel
-   ,input  wire [4:0]   f2h_arid
-   ,input  wire [31:0]  f2h_araddr
-   ,input  wire [7:0]   f2h_arlen
-   ,input  wire [2:0]   f2h_arsize
-   ,input  wire [1:0]   f2h_arburst
-   ,input  wire         f2h_arlock
-   ,input  wire [3:0]   f2h_arcache
-   ,input  wire [2:0]   f2h_arprot
-   ,input  wire [3:0]   f2h_arqos
-   ,input  wire         f2h_arvalid
-   ,output wire         f2h_arready
-   ,input  wire [3:0]   f2h_arregion
+   ,input  wire [4:0]   fpga2hps_arid
+   ,input  wire [31:0]  fpga2hps_araddr
+   ,input  wire [3:0]   fpga2hps_arregion
+   ,input  wire [1:0]   fpga2hps_ardomain
+   ,input  wire [3:0]   fpga2hps_arsnoop
+   ,input  wire [7:0]   fpga2hps_arlen
+   ,input  wire [1:0]   fpga2hps_arburst
+   ,input  wire         fpga2hps_arlock
+   ,input  wire [3:0]   fpga2hps_arcache
+   ,input  wire [2:0]   fpga2hps_arprot
+   ,input  wire [3:0]   fpga2hps_arqos
+   ,input  wire [7:0]   fpga2hps_aruser
+   ,input  wire         fpga2hps_armmusecsid
+   ,input  wire [15:0]  fpga2hps_armmusid
+   ,input  wire         fpga2hps_arvalid
+   ,output wire         fpga2hps_arready
    // R channel
-   ,output wire [4:0]   f2h_rid
-   ,output wire [255:0] f2h_rdata
-   ,output wire [1:0]   f2h_rresp
-   ,output wire         f2h_rlast
-   ,output wire         f2h_rvalid
-   ,input  wire         f2h_rready
-   ,output wire [7:0]   f2h_ruser
+   ,output wire [4:0]   fpga2hps_rid
+   ,output wire [255:0] fpga2hps_rdata
+   ,output wire [1:0]   fpga2hps_rresp
+   ,output wire         fpga2hps_rlast
+   ,output wire [7:0]   fpga2hps_ruser
+   ,output wire         fpga2hps_rvalid
+   ,input  wire         fpga2hps_rready
+`endif //  `ifdef ENABLE_FPGA2HPS
+`ifdef ENABLE_FPGA2SDRAM
+   // FPGA2SDRAM AXI4 Slave port (FPGA -> SDRAM; 256-bit data, 32-bit addr)
+   // AW channel
+   ,input  wire [4:0]   f2sdram_awid
+   ,input  wire [31:0]  f2sdram_awaddr
+   ,input  wire [3:0]   f2sdram_awregion
+   ,input  wire [7:0]   f2sdram_awlen
+   ,input  wire [2:0]   f2sdram_awsize
+   ,input  wire [1:0]   f2sdram_awburst
+   ,input  wire         f2sdram_awlock
+   ,input  wire [3:0]   f2sdram_awcache
+   ,input  wire [2:0]   f2sdram_awprot
+   ,input  wire [3:0]   f2sdram_awqos
+   ,input  wire [24:0]  f2sdram_awuser
+   ,input  wire         f2sdram_awvalid
+   ,output wire         f2sdram_awready
+   // W channel
+   ,input  wire [255:0] f2sdram_wdata
+   ,input  wire [31:0]  f2sdram_wstrb
+   ,input  wire         f2sdram_wlast
+   ,input  wire [7:0]   f2sdram_wuser
+   ,input  wire         f2sdram_wvalid
+   ,output wire         f2sdram_wready
+   // B channel
+   ,output wire [4:0]   f2sdram_bid
+   ,output wire [1:0]   f2sdram_bresp
+   ,output wire [7:0]   f2sdram_buser
+   ,output wire         f2sdram_bvalid
+   ,input  wire         f2sdram_bready
+   // AR channel
+   ,input  wire [4:0]   f2sdram_arid
+   ,input  wire [31:0]  f2sdram_araddr
+   ,input  wire [3:0]   f2sdram_arregion
+   ,input  wire [7:0]   f2sdram_arlen
+   ,input  wire [2:0]   f2sdram_arsize
+   ,input  wire [1:0]   f2sdram_arburst
+   ,input  wire         f2sdram_arlock
+   ,input  wire [3:0]   f2sdram_arcache
+   ,input  wire [2:0]   f2sdram_arprot
+   ,input  wire [3:0]   f2sdram_arqos
+   ,input  wire [24:0]  f2sdram_aruser
+   ,input  wire         f2sdram_arvalid
+   ,output wire         f2sdram_arready
+   // R channel
+   ,output wire [4:0]   f2sdram_rid
+   ,output wire [255:0] f2sdram_rdata
+   ,output wire [1:0]   f2sdram_rresp
+   ,output wire         f2sdram_rlast
+   ,output wire [7:0]   f2sdram_ruser
+   ,output wire         f2sdram_rvalid
+   ,input  wire         f2sdram_rready
+`endif //  `ifdef ENABLE_FPGA2SDRAM
+`ifdef ENABLE_HPS2FPGA
+   // HPS2FPGA AXI4 Master port (HPS -> FPGA; 128-bit data, 32-bit addr)
+   // AW channel
+   ,output wire [3:0]   hps2fpga_awid
+   ,output wire [31:0]  hps2fpga_awaddr
+   ,output wire [7:0]   hps2fpga_awlen
+   ,output wire [2:0]   hps2fpga_awsize
+   ,output wire [1:0]   hps2fpga_awburst
+   ,output wire         hps2fpga_awlock
+   ,output wire [3:0]   hps2fpga_awcache
+   ,output wire [2:0]   hps2fpga_awprot
+   ,output wire         hps2fpga_awvalid
+   ,input  wire         hps2fpga_awready
+   // W channel
+   ,output wire [127:0] hps2fpga_wdata
+   ,output wire [15:0]  hps2fpga_wstrb
+   ,output wire         hps2fpga_wlast
+   ,output wire         hps2fpga_wvalid
+   ,input  wire         hps2fpga_wready
+   // B channel
+   ,input  wire [3:0]   hps2fpga_bid
+   ,input  wire [1:0]   hps2fpga_bresp
+   ,input  wire         hps2fpga_bvalid
+   ,output wire         hps2fpga_bready
+   // AR channel
+   ,output wire [3:0]   hps2fpga_arid
+   ,output wire [31:0]  hps2fpga_araddr
+   ,output wire [7:0]   hps2fpga_arlen
+   ,output wire [2:0]   hps2fpga_arsize
+   ,output wire [1:0]   hps2fpga_arburst
+   ,output wire         hps2fpga_arlock
+   ,output wire [3:0]   hps2fpga_arcache
+   ,output wire [2:0]   hps2fpga_arprot
+   ,output wire         hps2fpga_arvalid
+   ,input  wire         hps2fpga_arready
+   // R channel
+   ,input  wire [3:0]   hps2fpga_rid
+   ,input  wire [127:0] hps2fpga_rdata
+   ,input  wire [1:0]   hps2fpga_rresp
+   ,input  wire         hps2fpga_rlast
+   ,input  wire         hps2fpga_rvalid
+   ,output wire         hps2fpga_rready
+`endif //  `ifdef ENABLE_HPS2FPGA
    // LWHPS2FPGA AXI4 Master port (HPS -> FPGA, lightweight; 32-bit data, 29-bit addr)
    // AW channel
-   ,output wire [3:0]   lwh2f_awid
-   ,output wire [28:0]  lwh2f_awaddr
-   ,output wire [7:0]   lwh2f_awlen
-   ,output wire [2:0]   lwh2f_awsize
-   ,output wire [1:0]   lwh2f_awburst
-   ,output wire         lwh2f_awlock
-   ,output wire [3:0]   lwh2f_awcache
-   ,output wire [2:0]   lwh2f_awprot
-   ,output wire         lwh2f_awvalid
-   ,input  wire         lwh2f_awready
+   ,output wire [3:0]   lwhps2fpga_awid
+   ,output wire [28:0]  lwhps2fpga_awaddr
+   ,output wire [7:0]   lwhps2fpga_awlen
+   ,output wire [2:0]   lwhps2fpga_awsize
+   ,output wire [1:0]   lwhps2fpga_awburst
+   ,output wire         lwhps2fpga_awlock
+   ,output wire [3:0]   lwhps2fpga_awcache
+   ,output wire [2:0]   lwhps2fpga_awprot
+   ,output wire         lwhps2fpga_awvalid
+   ,input  wire         lwhps2fpga_awready
    // W channel
-   ,output wire [31:0]  lwh2f_wdata
-   ,output wire [3:0]   lwh2f_wstrb
-   ,output wire         lwh2f_wlast
-   ,output wire         lwh2f_wvalid
-   ,input  wire         lwh2f_wready
+   ,output wire [31:0]  lwhps2fpga_wdata
+   ,output wire [3:0]   lwhps2fpga_wstrb
+   ,output wire         lwhps2fpga_wlast
+   ,output wire         lwhps2fpga_wvalid
+   ,input  wire         lwhps2fpga_wready
    // B channel
-   ,input  wire [3:0]   lwh2f_bid
-   ,input  wire [1:0]   lwh2f_bresp
-   ,input  wire         lwh2f_bvalid
-   ,output wire         lwh2f_bready
+   ,input  wire [3:0]   lwhps2fpga_bid
+   ,input  wire [1:0]   lwhps2fpga_bresp
+   ,input  wire         lwhps2fpga_bvalid
+   ,output wire         lwhps2fpga_bready
    // AR channel
-   ,output wire [3:0]   lwh2f_arid
-   ,output wire [28:0]  lwh2f_araddr
-   ,output wire [7:0]   lwh2f_arlen
-   ,output wire [2:0]   lwh2f_arsize
-   ,output wire [1:0]   lwh2f_arburst
-   ,output wire         lwh2f_arlock
-   ,output wire [3:0]   lwh2f_arcache
-   ,output wire [2:0]   lwh2f_arprot
-   ,output wire         lwh2f_arvalid
-   ,input  wire         lwh2f_arready
+   ,output wire [3:0]   lwhps2fpga_arid
+   ,output wire [28:0]  lwhps2fpga_araddr
+   ,output wire [7:0]   lwhps2fpga_arlen
+   ,output wire [2:0]   lwhps2fpga_arsize
+   ,output wire [1:0]   lwhps2fpga_arburst
+   ,output wire         lwhps2fpga_arlock
+   ,output wire [3:0]   lwhps2fpga_arcache
+   ,output wire [2:0]   lwhps2fpga_arprot
+   ,output wire         lwhps2fpga_arvalid
+   ,input  wire         lwhps2fpga_arready
    // R channel
-   ,input  wire [3:0]   lwh2f_rid
-   ,input  wire [31:0]  lwh2f_rdata
-   ,input  wire [1:0]   lwh2f_rresp
-   ,input  wire         lwh2f_rlast
-   ,input  wire         lwh2f_rvalid
-   ,output wire         lwh2f_rready
+   ,input  wire [3:0]   lwhps2fpga_rid
+   ,input  wire [31:0]  lwhps2fpga_rdata
+   ,input  wire [1:0]   lwhps2fpga_rresp
+   ,input  wire         lwhps2fpga_rlast
+   ,input  wire         lwhps2fpga_rvalid
+   ,output wire         lwhps2fpga_rready
    // HPS Peripheral I/O
    ,input  wire         hps_io_hps_osc_clk
    ,output wire         hps_io_mdio0_mdc
@@ -167,8 +281,6 @@ module hps_wrapper
    ,output wire         mem_0_reset_n
    ,input  wire         oct_rzqin_0
    ,input  wire         ref_clk
-   // FPGA-to-HPS interrupt requests, lower 32 bits (irq0[x] -> GIC SPI 17+x).
-   ,input  wire [31:0]  f2h_irq0
    );
 
    // =========================================================================================
@@ -177,68 +289,6 @@ module hps_wrapper
 
    wire [31:0]          fpga2hps_interrupt_irq0_irq = f2h_irq0;   //  fpga2hps_interrupt_irq0.irq,              FPGA-to-HPS interrupts (lower 32 bits).
    wire [31:0]          fpga2hps_interrupt_irq1_irq = '0;   //  fpga2hps_interrupt_irq1.irq,              FPGA-to-HPS interrupts (higher 32 bits).
-
-   // =========================================================================================
-   // FPGA2HPS Bridge (ACE5Lite)
-   // =========================================================================================
-   // AW channel
-   wire [4:0]           fpga2hps_awid;                      //                 fpga2hps.awid,             Identification tag for a write transaction.
-   wire [31:0]          fpga2hps_awaddr;                    //                         .awaddr,           The address of the first transfer in a write transaction.
-   wire [1:0]           fpga2hps_awdomain;                  //                         .awdomain,         Indicates the shareability domain of a write transaction.
-   wire [3:0]           fpga2hps_awsnoop;                   //                         .awsnoop,          Indicates transaction type for a shareable write transaction.
-   wire [7:0]           fpga2hps_awlen;                     //                         .awlen,            Exact number of data ransfers in a write transaction.
-   wire [2:0]           fpga2hps_awsize;                    //                         .awsize,           The number of bytes in each data transfer of a write transaction.
-   wire [2:0]           fpga2hps_arsize;                    //                         .arsize,           The number of bytes in each data transfer of a read transaction.
-   wire [1:0]           fpga2hps_awburst;                   //                         .awburst,          Burst type indicating how address changes between each transfer of a write transaction.
-   wire                 fpga2hps_awlock;                    //                         .awlock,           Provides info on atomic characteristics of a write transaction.
-   wire [3:0]           fpga2hps_awcache;                   //                         .awcache,          Indicates how a write transaction is required to progress through a system.
-   wire [2:0]           fpga2hps_awprot;                    //                         .awprot,           Protection attributes of a write transaction: privelege, security level, and access type.
-   wire [3:0]           fpga2hps_awqos;                     //                         .awqos,            Quality of service identifier for a write transaction.
-   wire [3:0]           fpga2hps_awregion;                  //                         .awregion,         Region indicator for a write transaction.
-   wire [10:0]          fpga2hps_awstashnid;                //                         .awstashnid,       Node identifier of the target for a stash operation.
-   wire                 fpga2hps_awstashniden;              //                         .awstashniden,     Indicates whether the AWSTASHNID signal is valid.
-   wire [4:0]           fpga2hps_awstashlpid;               //                         .awstashlpid,      Logical processor identifier within the target for a stash operation.
-   wire                 fpga2hps_awstashlpiden;             //                         .awstashlpiden,    Indicates whether the AWSTASHLPID signal is valid.
-   wire [5:0]           fpga2hps_awatop;                    //                         .awatop,           Indicates the type and endianness of atomic transactions.
-   wire [7:0]           fpga2hps_awuser;                    //                         .awuser,           Extension of the write address channel.
-   wire                 fpga2hps_awvalid;                   //                         .awvalid,          Indicates the write address channel signals are valid.
-   wire                 fpga2hps_awready;                   //                         .awready,          Indicates a transfer on the write address channel can be accepted.
-   // W channel
-   wire [255:0]         fpga2hps_wdata;                     //                         .wdata,            Write data.
-   wire [31:0]          fpga2hps_wstrb;                     //                         .wstrb,            Write strobes indicating which byte lanes hold valid data.
-   wire                 fpga2hps_wlast;                     //                         .wlast,            Indicates the last data transfer in a write transaction.
-   wire [7:0]           fpga2hps_wuser;                     //                         .wuser,            Extension of the write data channel.
-   wire                 fpga2hps_wvalid;                    //                         .wvalid,           Indicates the write data channel signals are valid.
-   wire                 fpga2hps_wready;                    //                         .wready,           Indicates a transfer on the write data channel can be accepted.
-   // B channel
-   wire [4:0]           fpga2hps_bid;                       //                         .bid,              Identification tag for a write response.
-   wire [1:0]           fpga2hps_bresp;                     //                         .bresp,            Write response indicating status of a write transaction.
-   wire [7:0]           fpga2hps_buser;                     //                         .buser,            Extension of the write response channel.
-   wire                 fpga2hps_bvalid;                    //                         .bvalid,           Indicates the write response channel signals are valid.
-   wire                 fpga2hps_bready;                    //                         .bready,           Indicates a transfer on the write response channel can be accepted.
-   // AR channel
-   wire [4:0]           fpga2hps_arid;                      //                         .arid,             Identification tag for a read transaction.
-   wire [31:0]          fpga2hps_araddr;                    //                         .araddr,           The address of the first transfer of a read transaction.
-   wire [1:0]           fpga2hps_ardomain;                  //                         .ardomain,         Indicates the shareability domain of a read transaction.
-   wire [3:0]           fpga2hps_arsnoop;                   //                         .arsnoop,          Indicates the transaction type for shareable read transactions.
-   wire [7:0]           fpga2hps_arlen;                     //                         .arlen,            The exact number of data transfers in a read transaction.
-   wire [1:0]           fpga2hps_arburst;                   //                         .arburst,          Burst type indicating how address changes between each transfer in a read transaction.
-   wire                 fpga2hps_arlock;                    //                         .arlock,           Provides info on atomic characteristics of a read transaction.
-   wire [3:0]           fpga2hps_arcache;                   //                         .arcache,          Indicates how a read transaction is required to progress through a system.
-   wire [2:0]           fpga2hps_arprot;                    //                         .arprot,           Protection attributes of a read transaction: privelege, security level, and access type.
-   wire [3:0]           fpga2hps_arqos;                     //                         .arqos,            Quality of service identifier for a read transaction.
-   wire [3:0]           fpga2hps_arregion;                  //                         .arregion,         Region indicator for a read transaction.
-   wire [7:0]           fpga2hps_aruser;                    //                         .aruser,           Extension of the read address channel.
-   wire                 fpga2hps_arvalid;                   //                         .arvalid,          Indicates the read address channels signals are valid.
-   wire                 fpga2hps_arready;                   //                         .arready,          Indicates a transfer on the read address channel can be accepted.
-   // R channel
-   wire [4:0]           fpga2hps_rid;                       //                         .rid,              Identification tag for read data and response.
-   wire [255:0]         fpga2hps_rdata;                     //                         .rdata,            Read data.
-   wire [1:0]           fpga2hps_rresp;                     //                         .rresp,            Indicates the status of a read transfer.
-   wire                 fpga2hps_rlast;                     //                         .rlast,            Indicates the last data transfer in a read transaction.
-   wire [7:0]           fpga2hps_ruser;                     //                         .ruser,            Extension of the read data channel.
-   wire                 fpga2hps_rvalid;                    //                         .rvalid,           Indicates the read data channel signals are valid.
-   wire                 fpga2hps_rready;                    //                         .rready,           Indicates a transfer on the read data channel can be accepted.
 
    // =========================================================================================
    // HPS2EMIF CSR Bridge (AXI4Lite)
@@ -331,49 +381,91 @@ module hps_wrapper
       .fpga2hps_interrupt_irq1_irq,
       //
       .emac0_app_rst_reset_n      (),
-      // LightWeight HPS2FPGA Bridge
+`ifdef ENABLE_HPS2FPGA
+      // HPS2FPGA AXI4 Bridge
+      .hps2fpga_axi_clock_clk     (clk_sys),
+      .hps2fpga_axi_reset_reset   (rst_sys),
+      .hps2fpga_awid,
+      .hps2fpga_awaddr,
+      .hps2fpga_awlen,
+      .hps2fpga_awsize,
+      .hps2fpga_awburst,
+      .hps2fpga_awlock,
+      .hps2fpga_awcache,
+      .hps2fpga_awprot,
+      .hps2fpga_awvalid,
+      .hps2fpga_awready,
+      .hps2fpga_wdata,
+      .hps2fpga_wstrb,
+      .hps2fpga_wlast,
+      .hps2fpga_wvalid,
+      .hps2fpga_wready,
+      .hps2fpga_bid,
+      .hps2fpga_bresp,
+      .hps2fpga_bvalid,
+      .hps2fpga_bready,
+      .hps2fpga_arid,
+      .hps2fpga_araddr,
+      .hps2fpga_arlen,
+      .hps2fpga_arsize,
+      .hps2fpga_arburst,
+      .hps2fpga_arlock,
+      .hps2fpga_arcache,
+      .hps2fpga_arprot,
+      .hps2fpga_arvalid,
+      .hps2fpga_arready,
+      .hps2fpga_rid,
+      .hps2fpga_rdata,
+      .hps2fpga_rresp,
+      .hps2fpga_rlast,
+      .hps2fpga_rvalid,
+      .hps2fpga_rready,
+`endif //  `ifdef ENABLE_HPS2FPGA
+      // LightWeight AXI4 HPS2FPGA Bridge
       .lwhps2fpga_axi_clock_clk   (clk_sys),
       .lwhps2fpga_axi_reset_reset (rst_sys),
-      .lwhps2fpga_awid            (lwh2f_awid),
-      .lwhps2fpga_awaddr          (lwh2f_awaddr),
-      .lwhps2fpga_awlen           (lwh2f_awlen),
-      .lwhps2fpga_awsize          (lwh2f_awsize),
-      .lwhps2fpga_awburst         (lwh2f_awburst),
-      .lwhps2fpga_awlock          (lwh2f_awlock),
-      .lwhps2fpga_awcache         (lwh2f_awcache),
-      .lwhps2fpga_awprot          (lwh2f_awprot),
-      .lwhps2fpga_awvalid         (lwh2f_awvalid),
-      .lwhps2fpga_awready         (lwh2f_awready),
-      .lwhps2fpga_wdata           (lwh2f_wdata),
-      .lwhps2fpga_wstrb           (lwh2f_wstrb),
-      .lwhps2fpga_wlast           (lwh2f_wlast),
-      .lwhps2fpga_wvalid          (lwh2f_wvalid),
-      .lwhps2fpga_wready          (lwh2f_wready),
-      .lwhps2fpga_bid             (lwh2f_bid),
-      .lwhps2fpga_bresp           (lwh2f_bresp),
-      .lwhps2fpga_bvalid          (lwh2f_bvalid),
-      .lwhps2fpga_bready          (lwh2f_bready),
-      .lwhps2fpga_arid            (lwh2f_arid),
-      .lwhps2fpga_araddr          (lwh2f_araddr),
-      .lwhps2fpga_arlen           (lwh2f_arlen),
-      .lwhps2fpga_arsize          (lwh2f_arsize),
-      .lwhps2fpga_arburst         (lwh2f_arburst),
-      .lwhps2fpga_arlock          (lwh2f_arlock),
-      .lwhps2fpga_arcache         (lwh2f_arcache),
-      .lwhps2fpga_arprot          (lwh2f_arprot),
-      .lwhps2fpga_arvalid         (lwh2f_arvalid),
-      .lwhps2fpga_arready         (lwh2f_arready),
-      .lwhps2fpga_rid             (lwh2f_rid),
-      .lwhps2fpga_rdata           (lwh2f_rdata),
-      .lwhps2fpga_rresp           (lwh2f_rresp),
-      .lwhps2fpga_rlast           (lwh2f_rlast),
-      .lwhps2fpga_rvalid          (lwh2f_rvalid),
-      .lwhps2fpga_rready          (lwh2f_rready),
-      // FPGA2HPS Bridge
+      .lwhps2fpga_awid,
+      .lwhps2fpga_awaddr,
+      .lwhps2fpga_awlen,
+      .lwhps2fpga_awsize,
+      .lwhps2fpga_awburst,
+      .lwhps2fpga_awlock,
+      .lwhps2fpga_awcache,
+      .lwhps2fpga_awprot,
+      .lwhps2fpga_awvalid,
+      .lwhps2fpga_awready,
+      .lwhps2fpga_wdata,
+      .lwhps2fpga_wstrb,
+      .lwhps2fpga_wlast,
+      .lwhps2fpga_wvalid,
+      .lwhps2fpga_wready,
+      .lwhps2fpga_bid,
+      .lwhps2fpga_bresp,
+      .lwhps2fpga_bvalid,
+      .lwhps2fpga_bready,
+      .lwhps2fpga_arid,
+      .lwhps2fpga_araddr,
+      .lwhps2fpga_arlen,
+      .lwhps2fpga_arsize,
+      .lwhps2fpga_arburst,
+      .lwhps2fpga_arlock,
+      .lwhps2fpga_arcache,
+      .lwhps2fpga_arprot,
+      .lwhps2fpga_arvalid,
+      .lwhps2fpga_arready,
+      .lwhps2fpga_rid,
+      .lwhps2fpga_rdata,
+      .lwhps2fpga_rresp,
+      .lwhps2fpga_rlast,
+      .lwhps2fpga_rvalid,
+      .lwhps2fpga_rready,
+`ifdef ENABLE_FPGA2HPS
+      // FPGA2HPS ACE5Lite Bridge
       .fpga2hps_clock_clk         (clk_sys),
       .fpga2hps_reset_reset       (rst_sys),
       .fpga2hps_awid,
       .fpga2hps_awaddr,
+      .fpga2hps_awregion,
       .fpga2hps_awdomain,
       .fpga2hps_awsnoop,
       .fpga2hps_awlen,
@@ -384,13 +476,14 @@ module hps_wrapper
       .fpga2hps_awcache,
       .fpga2hps_awprot,
       .fpga2hps_awqos,
-      .fpga2hps_awregion,
+      .fpga2hps_awuser,
       .fpga2hps_awstashnid,
       .fpga2hps_awstashniden,
       .fpga2hps_awstashlpid,
       .fpga2hps_awstashlpiden,
       .fpga2hps_awatop,
-      .fpga2hps_awuser,
+      .fpga2hps_awmmusecsid,
+      .fpga2hps_awmmusid,
       .fpga2hps_awvalid,
       .fpga2hps_awready,
       .fpga2hps_wdata,
@@ -406,6 +499,7 @@ module hps_wrapper
       .fpga2hps_bready,
       .fpga2hps_arid,
       .fpga2hps_araddr,
+      .fpga2hps_arregion,
       .fpga2hps_ardomain,
       .fpga2hps_arsnoop,
       .fpga2hps_arlen,
@@ -414,8 +508,9 @@ module hps_wrapper
       .fpga2hps_arcache,
       .fpga2hps_arprot,
       .fpga2hps_arqos,
-      .fpga2hps_arregion,
       .fpga2hps_aruser,
+      .fpga2hps_armmusecsid,
+      .fpga2hps_armmusid,
       .fpga2hps_arvalid,
       .fpga2hps_arready,
       .fpga2hps_rid,
@@ -425,6 +520,56 @@ module hps_wrapper
       .fpga2hps_ruser,
       .fpga2hps_rvalid,
       .fpga2hps_rready,
+`endif //  `ifdef ENABLE_FPGA2HPS
+`ifdef ENABLE_FPGA2SDRAM
+      // FPGA2SDRAM Bridge
+      .f2sdram_axi_clock_clk      (clk_sys),
+      .f2sdram_axi_reset_reset    (rst_sys),
+      .f2sdram_awid,
+      .f2sdram_awaddr,
+      .f2sdram_awlen,
+      .f2sdram_awsize,
+      .f2sdram_arsize,
+      .f2sdram_awburst,
+      .f2sdram_awlock,
+      .f2sdram_awcache,
+      .f2sdram_awprot,
+      .f2sdram_awqos,
+      .f2sdram_awregion,
+      .f2sdram_awuser,
+      .f2sdram_awvalid,
+      .f2sdram_awready,
+      .f2sdram_wdata,
+      .f2sdram_wstrb,
+      .f2sdram_wlast,
+      .f2sdram_wuser,
+      .f2sdram_wvalid,
+      .f2sdram_wready,
+      .f2sdram_bid,
+      .f2sdram_bresp,
+      .f2sdram_buser,
+      .f2sdram_bvalid,
+      .f2sdram_bready,
+      .f2sdram_arid,
+      .f2sdram_araddr,
+      .f2sdram_arlen,
+      .f2sdram_arburst,
+      .f2sdram_arlock,
+      .f2sdram_arcache,
+      .f2sdram_arprot,
+      .f2sdram_arqos,
+      .f2sdram_arregion,
+      .f2sdram_aruser,
+      .f2sdram_arvalid,
+      .f2sdram_arready,
+      .f2sdram_rid,
+      .f2sdram_rdata,
+      .f2sdram_rresp,
+      .f2sdram_rlast,
+      .f2sdram_ruser,
+      .f2sdram_rvalid,
+      .f2sdram_rready,
+`endif //  `ifdef ENABLE_FPGA2SDRAM
       // HPS Peripheral I/O
       .hps_io_hps_osc_clk,
       .hps_io_mdio0_mdc,
@@ -611,111 +756,6 @@ module hps_wrapper
       .mem_0_reset_n,
       .oct_rzqin_0,
       .ref_clk
-      );
-
-   // AXI4 <-> ACE5Lite conversion
-   ace5_translate #
-     (.WSTRB_WIDTH (32),
-      .USER_WIDTH  (8))
-   u_ace5_translate
-     (.clk                      (clk_sys),
-      .reset                    (rst_sys),
-      .m_ace5lite_awid          (fpga2hps_awid),
-      .m_ace5lite_awaddr        (fpga2hps_awaddr),
-      .m_ace5lite_awdomain      (fpga2hps_awdomain),
-      .m_ace5lite_awsnoop       (fpga2hps_awsnoop),
-      .m_ace5lite_awlen         (fpga2hps_awlen),
-      .m_ace5lite_awsize        (fpga2hps_awsize),
-      .m_ace5lite_awburst       (fpga2hps_awburst),
-      .m_ace5lite_awlock        (fpga2hps_awlock),
-      .m_ace5lite_awcache       (fpga2hps_awcache),
-      .m_ace5lite_awprot        (fpga2hps_awprot),
-      .m_ace5lite_awqos         (fpga2hps_awqos),
-      .m_ace5lite_awregion      (fpga2hps_awregion),
-      .m_ace5lite_awstashnid    (fpga2hps_awstashnid),
-      .m_ace5lite_awstashniden  (fpga2hps_awstashniden),
-      .m_ace5lite_awstashlpid   (fpga2hps_awstashlpid),
-      .m_ace5lite_awstashlpiden (fpga2hps_awstashlpiden),
-      .m_ace5lite_awatop        (fpga2hps_awatop),
-      .m_ace5lite_awuser        (fpga2hps_awuser),
-      .m_ace5lite_awvalid       (fpga2hps_awvalid),
-      .m_ace5lite_awready       (fpga2hps_awready),
-      .m_ace5lite_wdata         (fpga2hps_wdata),
-      .m_ace5lite_wstrb         (fpga2hps_wstrb),
-      .m_ace5lite_wlast         (fpga2hps_wlast),
-      .m_ace5lite_wuser         (fpga2hps_wuser),
-      .m_ace5lite_wvalid        (fpga2hps_wvalid),
-      .m_ace5lite_wready        (fpga2hps_wready),
-      .m_ace5lite_bid           (fpga2hps_bid),
-      .m_ace5lite_bresp         (fpga2hps_bresp),
-      .m_ace5lite_buser         (fpga2hps_buser),
-      .m_ace5lite_bvalid        (fpga2hps_bvalid),
-      .m_ace5lite_bready        (fpga2hps_bready),
-      .m_ace5lite_arid          (fpga2hps_arid),
-      .m_ace5lite_araddr        (fpga2hps_araddr),
-      .m_ace5lite_ardomain      (fpga2hps_ardomain),
-      .m_ace5lite_arsnoop       (fpga2hps_arsnoop),
-      .m_ace5lite_arlen         (fpga2hps_arlen),
-      .m_ace5lite_arsize        (fpga2hps_arsize),
-      .m_ace5lite_arburst       (fpga2hps_arburst),
-      .m_ace5lite_arlock        (fpga2hps_arlock),
-      .m_ace5lite_arcache       (fpga2hps_arcache),
-      .m_ace5lite_arprot        (fpga2hps_arprot),
-      .m_ace5lite_arqos         (fpga2hps_arqos),
-      .m_ace5lite_arregion      (fpga2hps_arregion),
-      .m_ace5lite_aruser        (fpga2hps_aruser),
-      .m_ace5lite_arvalid       (fpga2hps_arvalid),
-      .m_ace5lite_arready       (fpga2hps_arready),
-      .m_ace5lite_rid           (fpga2hps_rid),
-      .m_ace5lite_rdata         (fpga2hps_rdata),
-      .m_ace5lite_rresp         (fpga2hps_rresp),
-      .m_ace5lite_rlast         (fpga2hps_rlast),
-      .m_ace5lite_rvalid        (fpga2hps_rvalid),
-      .m_ace5lite_rready        (fpga2hps_rready),
-      .m_ace5lite_ruser         (fpga2hps_ruser),
-      //
-      .s_axi_awid               (f2h_awid),
-      .s_axi_awaddr             (f2h_awaddr),
-      .s_axi_awlen              (f2h_awlen),
-      .s_axi_awsize             (f2h_awsize),
-      .s_axi_awburst            (f2h_awburst),
-      .s_axi_awlock             (f2h_awlock),
-      .s_axi_awcache            (f2h_awcache),
-      .s_axi_awprot             (f2h_awprot),
-      .s_axi_awqos              (f2h_awqos),
-      .s_axi_awregion           (f2h_awregion),
-      .s_axi_awvalid            (f2h_awvalid),
-      .s_axi_awready            (f2h_awready),
-      .s_axi_wdata              (f2h_wdata),
-      .s_axi_wstrb              (f2h_wstrb),
-      .s_axi_wlast              (f2h_wlast),
-      .s_axi_wuser              (f2h_wuser),
-      .s_axi_wvalid             (f2h_wvalid),
-      .s_axi_wready             (f2h_wready),
-      .s_axi_bid                (f2h_bid),
-      .s_axi_bresp              (f2h_bresp),
-      .s_axi_buser              (f2h_buser),
-      .s_axi_bvalid             (f2h_bvalid),
-      .s_axi_bready             (f2h_bready),
-      .s_axi_arid               (f2h_arid),
-      .s_axi_araddr             (f2h_araddr),
-      .s_axi_arlen              (f2h_arlen),
-      .s_axi_arsize             (f2h_arsize),
-      .s_axi_arburst            (f2h_arburst),
-      .s_axi_arlock             (f2h_arlock),
-      .s_axi_arcache            (f2h_arcache),
-      .s_axi_arprot             (f2h_arprot),
-      .s_axi_arqos              (f2h_arqos),
-      .s_axi_arregion           (f2h_arregion),
-      .s_axi_arvalid            (f2h_arvalid),
-      .s_axi_arready            (f2h_arready),
-      .s_axi_rid                (f2h_rid),
-      .s_axi_rdata              (f2h_rdata),
-      .s_axi_rresp              (f2h_rresp),
-      .s_axi_rlast              (f2h_rlast),
-      .s_axi_ruser              (f2h_ruser),
-      .s_axi_rvalid             (f2h_rvalid),
-      .s_axi_rready             (f2h_rready)
       );
 
 endmodule // hps_wrapper
