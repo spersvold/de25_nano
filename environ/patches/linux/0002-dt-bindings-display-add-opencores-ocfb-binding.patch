@@ -1,4 +1,4 @@
-From 8cf14eafb7d9433352f18f6327faf5c2a9ccec09 Mon Sep 17 00:00:00 2001
+From ec8941fd8da10ac2e687cfd92bce5366e0fee1d1 Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
 Subject: [PATCH 2/5] dt-bindings: display: add opencores,ocfb binding
@@ -13,16 +13,16 @@ binding is not tied to any one PLL macro.
 
 Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
- .../bindings/display/opencores,ocfb.yaml      | 158 ++++++++++++++++++
- 1 file changed, 158 insertions(+)
+ .../bindings/display/opencores,ocfb.yaml      | 168 ++++++++++++++++++
+ 1 file changed, 168 insertions(+)
  create mode 100644 Documentation/devicetree/bindings/display/opencores,ocfb.yaml
 
 diff --git a/Documentation/devicetree/bindings/display/opencores,ocfb.yaml b/Documentation/devicetree/bindings/display/opencores,ocfb.yaml
 new file mode 100644
-index 00000000..62a0866d
+index 00000000..9011a92d
 --- /dev/null
 +++ b/Documentation/devicetree/bindings/display/opencores,ocfb.yaml
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,168 @@
 +# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 +%YAML 1.2
 +---
@@ -68,6 +68,16 @@ index 00000000..62a0866d
 +      Reserved memory region (a "shared-dma-pool") the scanout buffers are
 +      allocated from. If absent the driver allocates them from the system
 +      DMA allocator instead.
++
++  opencores,vbar-offset:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: >
++      Offset, in bytes, subtracted from a scanout buffer's DMA (CPU-physical)
++      address before it is written to the video base address register (VBAR).
++      Use it when the scanout read master reaches DRAM through a window that is
++      not 1:1 with the CPU physical address map -- for example the FPGA-to-SDRAM
++      bridge, whose addresses are relative to the start of DRAM. Defaults to 0
++      (the master's address space matches CPU physical).
 +
 +  big-endian:
 +    type: boolean

@@ -1,4 +1,4 @@
-From 1b50103ce74c4e6fdbefb7750bf9db38b1f0bdb8 Mon Sep 17 00:00:00 2001
+From 381f5fa266d7bba6afb5e6e7e2e850f0287fae6a Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
 Subject: [PATCH 1/5] drm/tiny: add ocfb DRM/KMS driver for the OpenCores
@@ -25,9 +25,9 @@ Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
  drivers/gpu/drm/tiny/Kconfig    |  16 +
  drivers/gpu/drm/tiny/Makefile   |   1 +
- drivers/gpu/drm/tiny/ocfb-drm.c | 772 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/tiny/ocfb-drm.c | 786 ++++++++++++++++++++++++++++++++
  drivers/video/fbdev/Kconfig     |   3 +
- 4 files changed, 792 insertions(+)
+ 4 files changed, 806 insertions(+)
  create mode 100644 drivers/gpu/drm/tiny/ocfb-drm.c
 
 diff --git a/drivers/gpu/drm/tiny/Kconfig b/drivers/gpu/drm/tiny/Kconfig
@@ -71,10 +71,10 @@ index 48d30bf6..06e9f104 100644
  obj-$(CONFIG_TINYDRM_HX8357D)		+= hx8357d.o
 diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
 new file mode 100644
-index 00000000..f9ae13c9
+index 00000000..345bc237
 --- /dev/null
 +++ b/drivers/gpu/drm/tiny/ocfb-drm.c
-@@ -0,0 +1,772 @@
+@@ -0,0 +1,786 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * DRM/KMS driver for the OpenCores VGA/LCD 2.0 core (ocfb) and register-
@@ -184,6 +184,7 @@ index 00000000..f9ae13c9
 +	bool pll_programmed;		/* pll_m/n/c hold a live value */
 +	int irq;			/* vsync IRQ for vblank; <= 0 if not wired */
 +	u32 ctrl;			/* live CTRL word, VIE masked (set in enable) */
++	u32 vbar_offset;		/* subtracted from the DMA addr written to VBAR */
 +	struct drm_simple_display_pipe pipe;
 +	struct drm_connector connector;
 +};
@@ -502,7 +503,15 @@ index 00000000..f9ae13c9
 +		return;
 +
 +	gem = drm_fb_dma_get_gem_obj(state->fb, 0);
-+	ocfb_wr(ocfb, OCFB_VBARA, lower_32_bits(gem->dma_addr));
++	/*
++	 * VBAR holds the scanout base in the read master's address space. When
++	 * that master reaches DRAM through a window that is not 1:1 with the CPU
++	 * physical map -- e.g. the FPGA-to-SDRAM bridge, whose addresses are
++	 * DRAM-relative -- vbar-offset translates the buffer's DMA (CPU-physical)
++	 * address into it. Zero (the default) leaves the address unchanged.
++	 */
++	ocfb_wr(ocfb, OCFB_VBARA,
++		lower_32_bits(gem->dma_addr - ocfb->vbar_offset));
 +}
 +
 +/*
@@ -764,6 +773,11 @@ index 00000000..f9ae13c9
 +
 +	ocfb->has_pitch = of_property_read_bool(dev->of_node,
 +						"opencores,has-pitch");
++
++	/* Optional address-window translation for the scanout base (e.g. the
++	 * FPGA-to-SDRAM bridge's DRAM-relative addressing). Default 0 = 1:1. */
++	of_property_read_u32(dev->of_node, "opencores,vbar-offset",
++			     &ocfb->vbar_offset);
 +
 +	ocfb->has_pll = of_property_read_bool(dev->of_node,
 +					      "opencores,programmable-pixclk");
