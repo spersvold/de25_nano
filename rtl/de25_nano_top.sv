@@ -14,11 +14,12 @@
 //
 
 `define ENABLE_LPDDR4A
+`define ENABLE_LPDDR4B
 `define ENABLE_HPS
 `define ENABLE_HDMI
 //`define ENABLE_FPGA2HPS
-`define ENABLE_FPGA2SDRAM
-//`define ENABLE_HPS2FPGA
+//`define ENABLE_FPGA2SDRAM
+`define ENABLE_HPS2FPGA
 
 module de25_nano_top
   (
@@ -379,15 +380,15 @@ module de25_nano_top
    wire [3:0]                hps2fpga_awcache;
    wire [2:0]                hps2fpga_awprot;
    wire                      hps2fpga_awvalid;
-   wire                      hps2fpga_awready = 1'b0;
+   wire                      hps2fpga_awready;
    wire [127:0]              hps2fpga_wdata;
    wire [15:0]               hps2fpga_wstrb;
    wire                      hps2fpga_wlast;
    wire                      hps2fpga_wvalid;
-   wire                      hps2fpga_wready = 1'b0;
-   wire [3:0]                hps2fpga_bid = 4'h0;
-   wire [1:0]                hps2fpga_bresp = 2'b00;
-   wire                      hps2fpga_bvalid = 1'b0;
+   wire                      hps2fpga_wready;
+   wire [3:0]                hps2fpga_bid;
+   wire [1:0]                hps2fpga_bresp;
+   wire                      hps2fpga_bvalid;
    wire                      hps2fpga_bready;
    wire [3:0]                hps2fpga_arid;
    wire [31:0]               hps2fpga_araddr;
@@ -398,12 +399,12 @@ module de25_nano_top
    wire [3:0]                hps2fpga_arcache;
    wire [2:0]                hps2fpga_arprot;
    wire                      hps2fpga_arvalid;
-   wire                      hps2fpga_arready = 1'b0;
-   wire [3:0]                hps2fpga_rid = 4'h0;
-   wire [127:0]              hps2fpga_rdata = 128'h0;
-   wire [1:0]                hps2fpga_rresp = 2'b00;
-   wire                      hps2fpga_rlast = 1'b0;
-   wire                      hps2fpga_rvalid = 1'b0;
+   wire                      hps2fpga_arready;
+   wire [3:0]                hps2fpga_rid;
+   wire [127:0]              hps2fpga_rdata;
+   wire [1:0]                hps2fpga_rresp;
+   wire                      hps2fpga_rlast;
+   wire                      hps2fpga_rvalid;
    wire                      hps2fpga_rready;
 `endif //  `ifdef ENABLE_HPS2FPGA
 
@@ -835,22 +836,25 @@ module de25_nano_top
    //
 
    // vctrl vsync interrupt -> HPS via fpga2hps_interrupt_irq0[0] (GIC SPI 17).
-   logic                     vctrl_irq;
+   wire                      vctrl_irq;
    assign f2h_irq0 = {31'b0, vctrl_irq};
 
    wire [7:0]                vga_r, vga_g, vga_b;
    wire                      vga_hs, vga_vs, vga_bl;
 
+   wire                      vctrl_init_done;
+
    vctrl_wrapper #
-     (.AXI_ID_W   (5),
-      .AXI_ADDR_W (32),
-      .AXI_DATA_W (256))
+     (.AXI_DATA_W (256),
+      .AXI_ID_W   (5),
+      .AXI_ADDR_W (32))
    u_vctrl_wrapper
      (.clk_sys,
       .rst_sys,
       .clk_pix,
       .rst_pix,
       .vctrl_irq,
+      .vctrl_init_done,
       //
       .pll_divcnt   (hdmi_pll_divcnt),
       .pll_apply    (hdmi_pll_apply),
@@ -897,7 +901,59 @@ module de25_nano_top
       .lwhps2fpga_rvalid,
       .lwhps2fpga_rready,
       //
-`ifdef ENABLE_FPGA2HPS
+`ifdef ENABLE_HPS2FPGA
+      .hps2fpga_awid,
+      .hps2fpga_awaddr,
+      .hps2fpga_awlen,
+      .hps2fpga_awsize,
+      .hps2fpga_awburst,
+      .hps2fpga_awlock,
+      .hps2fpga_awcache,
+      .hps2fpga_awprot,
+      .hps2fpga_awvalid,
+      .hps2fpga_awready,
+      .hps2fpga_wdata,
+      .hps2fpga_wstrb,
+      .hps2fpga_wlast,
+      .hps2fpga_wvalid,
+      .hps2fpga_wready,
+      .hps2fpga_bid,
+      .hps2fpga_bresp,
+      .hps2fpga_bvalid,
+      .hps2fpga_bready,
+      .hps2fpga_arid,
+      .hps2fpga_araddr,
+      .hps2fpga_arlen,
+      .hps2fpga_arsize,
+      .hps2fpga_arburst,
+      .hps2fpga_arlock,
+      .hps2fpga_arcache,
+      .hps2fpga_arprot,
+      .hps2fpga_arvalid,
+      .hps2fpga_arready,
+      .hps2fpga_rid,
+      .hps2fpga_rdata,
+      .hps2fpga_rresp,
+      .hps2fpga_rlast,
+      .hps2fpga_rvalid,
+      .hps2fpga_rready,
+`endif
+`ifdef ENABLE_LPDDR4B
+      //
+      .LPDDR4B_REFCLK_p,
+      .LPDDR4B_CS_n,
+      .LPDDR4B_CA,
+      .LPDDR4B_CK,
+      .LPDDR4B_CK_n,
+      .LPDDR4B_CKE,
+      .LPDDR4B_DM,
+      .LPDDR4B_DQ,
+      .LPDDR4B_DQS,
+      .LPDDR4B_DQS_n,
+      .LPDDR4B_RESET_n,
+      .LPDDR4B_RZQ
+`elsif ENABLE_FPGA2HPS
+      //
       .m_axi_arid    (fpga2hps_arid),
       .m_axi_araddr  (fpga2hps_araddr),
       .m_axi_arlen   (fpga2hps_arlen),
@@ -933,7 +989,8 @@ module de25_nano_top
       .m_axi_bresp   (fpga2hps_bresp),
       .m_axi_bvalid  (fpga2hps_bvalid),
       .m_axi_bready  (fpga2hps_bready)
-`else // !`ifdef ENABLE_FPGA2HPS
+`elsif ENABLE_FPGA2SDRAM
+      //
       .m_axi_arid    (f2sdram_arid),
       .m_axi_araddr  (f2sdram_araddr),
       .m_axi_arlen   (f2sdram_arlen),
@@ -969,7 +1026,7 @@ module de25_nano_top
       .m_axi_bresp   (f2sdram_bresp),
       .m_axi_bvalid  (f2sdram_bvalid),
       .m_axi_bready  (f2sdram_bready)
-`endif // !`ifdef ENABLE_FPGA2HPS
+`endif // !`elsif ENABLE_FPGA2SDRAM
       );
 
    wire                      hdmi_config_done_pix;
@@ -998,7 +1055,7 @@ module de25_nano_top
    assign LED[0] = ~core_pll_locked;
    assign LED[1] = ~hdmi_pll_locked;
    assign LED[2] = ~hdmi_config_done;
-   assign LED[3] = 1'b1;
+   assign LED[3] = ~vctrl_init_done;
    assign LED[4] = 1'b1;
    assign LED[5] = 1'b1;
    assign LED[6] = 1'b1;

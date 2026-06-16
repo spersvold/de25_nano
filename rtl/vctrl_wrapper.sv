@@ -29,6 +29,7 @@ module vctrl_wrapper
    ,input  logic         rst_pix           // Pixel reset
    //
    ,output logic         vctrl_irq         // Interrupt
+   ,output logic         vctrl_init_done   // Init done
    //
    ,output logic [31:0]  pll_divcnt        // PLLDIVCNT (clk_sys, quasi-static)
    ,output logic         pll_apply         // trigger pulse (clk_sys)
@@ -42,6 +43,7 @@ module vctrl_wrapper
    ,output logic         vga_hs            // Horizontal Sync
    ,output logic         vga_vs            // Vertical Sync
    ,output logic         vga_bl            // Blanking
+   //
    // ----------------------------------------------------------------------
    // LWHPS2FPGA AXI4 Master port (HPS -> FPGA, lightweight; 32-bit data, 29-bit addr)
    // ----------------------------------------------------------------------
@@ -85,6 +87,64 @@ module vctrl_wrapper
    ,output logic         lwhps2fpga_rlast
    ,output logic         lwhps2fpga_rvalid
    ,input  logic         lwhps2fpga_rready
+`ifdef ENABLE_HPS2FPGA
+   // HPS2FPGA AXI4 Master port (HPS -> FPGA; 128-bit data, 32-bit addr)
+   // AW channel
+   ,input  wire [3:0]    hps2fpga_awid
+   ,input  wire [31:0]   hps2fpga_awaddr
+   ,input  wire [7:0]    hps2fpga_awlen
+   ,input  wire [2:0]    hps2fpga_awsize
+   ,input  wire [1:0]    hps2fpga_awburst
+   ,input  wire          hps2fpga_awlock
+   ,input  wire [3:0]    hps2fpga_awcache
+   ,input  wire [2:0]    hps2fpga_awprot
+   ,input  wire          hps2fpga_awvalid
+   ,output wire          hps2fpga_awready
+   // W channel
+   ,input  wire [127:0]  hps2fpga_wdata
+   ,input  wire [15:0]   hps2fpga_wstrb
+   ,input  wire          hps2fpga_wlast
+   ,input  wire          hps2fpga_wvalid
+   ,output wire          hps2fpga_wready
+   // B channel
+   ,output wire [3:0]    hps2fpga_bid
+   ,output wire [1:0]    hps2fpga_bresp
+   ,output wire          hps2fpga_bvalid
+   ,input  wire          hps2fpga_bready
+   // AR channel
+   ,input  wire [3:0]    hps2fpga_arid
+   ,input  wire [31:0]   hps2fpga_araddr
+   ,input  wire [7:0]    hps2fpga_arlen
+   ,input  wire [2:0]    hps2fpga_arsize
+   ,input  wire [1:0]    hps2fpga_arburst
+   ,input  wire          hps2fpga_arlock
+   ,input  wire [3:0]    hps2fpga_arcache
+   ,input  wire [2:0]    hps2fpga_arprot
+   ,input  wire          hps2fpga_arvalid
+   ,output wire          hps2fpga_arready
+   // R channel
+   ,output wire [3:0]    hps2fpga_rid
+   ,output wire [127:0]  hps2fpga_rdata
+   ,output wire [1:0]    hps2fpga_rresp
+   ,output wire          hps2fpga_rlast
+   ,output wire          hps2fpga_rvalid
+   ,input  wire          hps2fpga_rready
+`endif //  `ifdef ENABLE_HPS2FPGA
+`ifdef ENABLE_LPDDR4B
+   // LPDDR4B
+   ,input  wire          LPDDR4B_REFCLK_p
+   ,output wire          LPDDR4B_CS_n
+   ,output wire [ 5: 0]  LPDDR4B_CA
+   ,output wire          LPDDR4B_CK
+   ,output wire          LPDDR4B_CK_n
+   ,output wire          LPDDR4B_CKE
+   ,inout  wire [ 3: 0]  LPDDR4B_DM
+   ,inout  wire [31: 0]  LPDDR4B_DQ
+   ,inout  wire [ 3: 0]  LPDDR4B_DQS
+   ,inout  wire [ 3: 0]  LPDDR4B_DQS_n
+   ,output wire          LPDDR4B_RESET_n
+   ,input  wire          LPDDR4B_RZQ
+`else
    // ----------------------------------------------------------------------
    // AXI4 read master (write channel tied idle)
    // ----------------------------------------------------------------------
@@ -126,6 +186,7 @@ module vctrl_wrapper
    ,input  logic [1:0]   m_axi_bresp
    ,input  logic         m_axi_bvalid
    ,output logic         m_axi_bready
+`endif //  `ifdef ENABLE_LPDDR4B
    );
 
    //
@@ -273,8 +334,223 @@ module vctrl_wrapper
    // Scanout AXI read master (native 256-bit, internal line buffer)
    //
 
-   wire [31:0]               fb_base = {vctrl_vbar, 2'b00};
-   wire [31:0]               fb_size = {vctrl_vsiz, 2'b00};
+   wire [AXI_ADDR_W-1:0]     fb_base = AXI_ADDR_W'({vctrl_vbar, 2'b00});
+   wire [AXI_ADDR_W-1:0]     fb_size = AXI_ADDR_W'({vctrl_vsiz, 2'b00});
+
+`ifdef ENABLE_LPDDR4B
+   // ----------------------------------------------------------------------
+   // AXI4 read master (write channel tied idle)
+   // ----------------------------------------------------------------------
+   // AR channel
+   axid_t                    m_axi_arid;
+   axaddr_t                  m_axi_araddr;
+   logic [7:0]               m_axi_arlen;
+   logic [2:0]               m_axi_arsize;
+   logic [1:0]               m_axi_arburst;
+   logic                     m_axi_arlock;
+   logic [3:0]               m_axi_arcache;
+   logic [2:0]               m_axi_arprot;
+   logic                     m_axi_arvalid;
+   logic                     m_axi_arready;
+   // R channel
+   axid_t                    m_axi_rid;
+   axdata_t                  m_axi_rdata;
+   logic [1:0]               m_axi_rresp;
+   logic                     m_axi_rlast;
+   logic                     m_axi_rvalid;
+   logic                     m_axi_rready;
+   // AW channel
+   axid_t                    m_axi_awid;
+   axaddr_t                  m_axi_awaddr;
+   logic [7:0]               m_axi_awlen;
+   logic [2:0]               m_axi_awsize;
+   logic [1:0]               m_axi_awburst;
+   logic                     m_axi_awlock;
+   logic [3:0]               m_axi_awcache;
+   logic [2:0]               m_axi_awprot;
+   logic                     m_axi_awvalid;
+   logic                     m_axi_awready;
+   // W channel
+   axdata_t                  m_axi_wdata;
+   axstrb_t                  m_axi_wstrb;
+   logic                     m_axi_wlast;
+   logic                     m_axi_wvalid;
+   logic                     m_axi_wready;
+   // B channel
+   axid_t                    m_axi_bid;
+   logic [1:0]               m_axi_bresp;
+   logic                     m_axi_bvalid;
+   logic                     m_axi_bready;
+
+   // EMIF Calibration control bus
+   logic [26:0]              axil_driver_araddr;
+   logic [2:0]               axil_driver_arprot;
+   logic                     axil_driver_arvalid;
+   logic                     axil_driver_arready;
+   logic [31:0]              axil_driver_rdata;
+   logic [1:0]               axil_driver_rresp;
+   logic                     axil_driver_rvalid;
+   logic                     axil_driver_rready;
+
+   logic [26:0]              axil_driver_awaddr;
+   logic [2:0]               axil_driver_awprot;
+   logic                     axil_driver_awvalid;
+   logic                     axil_driver_awready;
+   logic [31:0]              axil_driver_wdata;
+   logic [3:0]               axil_driver_wstrb;
+   logic                     axil_driver_wvalid;
+   logic                     axil_driver_wready;
+   logic [1:0]               axil_driver_bresp;
+   logic                     axil_driver_bvalid;
+   logic                     axil_driver_bready;
+
+   logic                     cal_done_rst_n;
+
+   axil_driver_calibration u_axil_calib
+     (.axil_driver_clk     (clk_sys),
+      .axil_driver_rst_n   (~rst_sys),
+      .axil_driver_araddr,
+      .axil_driver_arprot,
+      .axil_driver_arvalid,
+      .axil_driver_arready,
+      .axil_driver_rdata,
+      .axil_driver_rresp,
+      .axil_driver_rvalid,
+      .axil_driver_rready,
+      .axil_driver_awaddr,
+      .axil_driver_awprot,
+      .axil_driver_awvalid,
+      .axil_driver_awready,
+      .axil_driver_wdata,
+      .axil_driver_wstrb,
+      .axil_driver_wvalid,
+      .axil_driver_wready,
+      .axil_driver_bresp,
+      .axil_driver_bvalid,
+      .axil_driver_bready,
+      .cal_done_rst_n
+      );
+
+   lpddr4b_vram u_lpddr4b
+     (.clk_sys_clk         (clk_sys),
+      .rst_sys_reset       (rst_sys),
+      .core_init_n_reset_n (cal_done_rst_n),
+      .ctrl_ready_reset_n  (vctrl_init_done),
+      //
+      .s0_axi4_awaddr      (hps2fpga_awaddr),
+      .s0_axi4_awburst     (hps2fpga_awburst),
+      .s0_axi4_awid        (hps2fpga_awid),
+      .s0_axi4_awlen       (hps2fpga_awlen),
+      .s0_axi4_awlock      (hps2fpga_awlock),
+      .s0_axi4_awcache     (hps2fpga_awcache),
+      .s0_axi4_awqos       (4'h0),
+      .s0_axi4_awsize      (hps2fpga_awsize),
+      .s0_axi4_awvalid     (hps2fpga_awvalid),
+      .s0_axi4_awprot      (hps2fpga_awprot),
+      .s0_axi4_awready     (hps2fpga_awready),
+      .s0_axi4_araddr      (hps2fpga_araddr),
+      .s0_axi4_arburst     (hps2fpga_arburst),
+      .s0_axi4_arid        (hps2fpga_arid),
+      .s0_axi4_arlen       (hps2fpga_arlen),
+      .s0_axi4_arlock      (hps2fpga_arlock),
+      .s0_axi4_arcache     (hps2fpga_arcache),
+      .s0_axi4_arqos       (4'h0),
+      .s0_axi4_arsize      (hps2fpga_arsize),
+      .s0_axi4_arvalid     (hps2fpga_arvalid),
+      .s0_axi4_arprot      (hps2fpga_arprot),
+      .s0_axi4_arready     (hps2fpga_arready),
+      .s0_axi4_wdata       (hps2fpga_wdata),
+      .s0_axi4_wstrb       (hps2fpga_wstrb),
+      .s0_axi4_wlast       (hps2fpga_wlast),
+      .s0_axi4_wvalid      (hps2fpga_wvalid),
+      .s0_axi4_wready      (hps2fpga_wready),
+      .s0_axi4_bready      (hps2fpga_bready),
+      .s0_axi4_bid         (hps2fpga_bid),
+      .s0_axi4_bresp       (hps2fpga_bresp),
+      .s0_axi4_bvalid      (hps2fpga_bvalid),
+      .s0_axi4_rready      (hps2fpga_rready),
+      .s0_axi4_rdata       (hps2fpga_rdata),
+      .s0_axi4_rid         (hps2fpga_rid),
+      .s0_axi4_rlast       (hps2fpga_rlast),
+      .s0_axi4_rresp       (hps2fpga_rresp),
+      .s0_axi4_rvalid      (hps2fpga_rvalid),
+      //
+      .s1_axi4_awaddr      (m_axi_awaddr),
+      .s1_axi4_awburst     (m_axi_awburst),
+      .s1_axi4_awid        (m_axi_awid),
+      .s1_axi4_awlen       (m_axi_awlen),
+      .s1_axi4_awlock      (m_axi_awlock),
+      .s1_axi4_awcache     (m_axi_awcache),
+      .s1_axi4_awqos       (4'h0),
+      .s1_axi4_awsize      (m_axi_awsize),
+      .s1_axi4_awvalid     (m_axi_awvalid),
+      .s1_axi4_awprot      (m_axi_awprot),
+      .s1_axi4_awready     (m_axi_awready),
+      .s1_axi4_araddr      (m_axi_araddr),
+      .s1_axi4_arburst     (m_axi_arburst),
+      .s1_axi4_arid        (m_axi_arid),
+      .s1_axi4_arlen       (m_axi_arlen),
+      .s1_axi4_arlock      (m_axi_arlock),
+      .s1_axi4_arcache     (m_axi_arcache),
+      .s1_axi4_arqos       (4'h0),
+      .s1_axi4_arsize      (m_axi_arsize),
+      .s1_axi4_arvalid     (m_axi_arvalid),
+      .s1_axi4_arprot      (m_axi_arprot),
+      .s1_axi4_arready     (m_axi_arready),
+      .s1_axi4_wdata       (m_axi_wdata),
+      .s1_axi4_wstrb       (m_axi_wstrb),
+      .s1_axi4_wlast       (m_axi_wlast),
+      .s1_axi4_wvalid      (m_axi_wvalid),
+      .s1_axi4_wready      (m_axi_wready),
+      .s1_axi4_bready      (m_axi_bready),
+      .s1_axi4_bid         (m_axi_bid),
+      .s1_axi4_bresp       (m_axi_bresp),
+      .s1_axi4_bvalid      (m_axi_bvalid),
+      .s1_axi4_rready      (m_axi_rready),
+      .s1_axi4_rdata       (m_axi_rdata),
+      .s1_axi4_rid         (m_axi_rid),
+      .s1_axi4_rlast       (m_axi_rlast),
+      .s1_axi4_rresp       (m_axi_rresp),
+      .s1_axi4_rvalid      (m_axi_rvalid),
+      //
+      .s0_axi4lite_awaddr  (axil_driver_awaddr),
+      .s0_axi4lite_awprot  (axil_driver_awprot),
+      .s0_axi4lite_awvalid (axil_driver_awvalid),
+      .s0_axi4lite_awready (axil_driver_awready),
+      .s0_axi4lite_araddr  (axil_driver_araddr),
+      .s0_axi4lite_arprot  (axil_driver_arprot),
+      .s0_axi4lite_arvalid (axil_driver_arvalid),
+      .s0_axi4lite_arready (axil_driver_arready),
+      .s0_axi4lite_wdata   (axil_driver_wdata),
+      .s0_axi4lite_wstrb   (axil_driver_wstrb),
+      .s0_axi4lite_wvalid  (axil_driver_wvalid),
+      .s0_axi4lite_wready  (axil_driver_wready),
+      .s0_axi4lite_bready  (axil_driver_bready),
+      .s0_axi4lite_bresp   (axil_driver_bresp),
+      .s0_axi4lite_bvalid  (axil_driver_bvalid),
+      .s0_axi4lite_rready  (axil_driver_rready),
+      .s0_axi4lite_rdata   (axil_driver_rdata),
+      .s0_axi4lite_rresp   (axil_driver_rresp),
+      .s0_axi4lite_rvalid  (axil_driver_rvalid),
+      //
+      .mem_0_mem_cs            (LPDDR4B_CS_n),
+      .mem_0_mem_ca            (LPDDR4B_CA),
+      .mem_0_mem_cke           (LPDDR4B_CKE),
+      .mem_0_mem_dq            (LPDDR4B_DQ),
+      .mem_0_mem_dqs_t         (LPDDR4B_DQS),
+      .mem_0_mem_dqs_c         (LPDDR4B_DQS_n),
+      .mem_0_mem_dmi           (LPDDR4B_DM),
+      .mem_ck_0_mem_ck_t       (LPDDR4B_CK),
+      .mem_ck_0_mem_ck_c       (LPDDR4B_CK_n),
+      .mem_reset_n_mem_reset_n (LPDDR4B_RESET_n),
+      .oct_0_oct_rzqin         (LPDDR4B_RZQ),
+      .ref_clk_clk             (LPDDR4B_REFCLK_p)
+      );
+`else // !`ifdef ENABLE_LPDDR4B
+   assign vctrl_init_done = 1'b1;
+`endif //  `ifdef ENABLE_LPDDR4B
+
+   wire                      axim_ven = vctrl_init_done & vctrl_ven;
 
    vctrl_axim #
      (.ADDR_WIDTH     (AXI_ADDR_W),
@@ -291,7 +567,7 @@ module vctrl_wrapper
       .frame_sys,
       .fb_base,
       .fb_size,
-      .ven           (vctrl_ven),
+      .ven           (axim_ven),
       .fetch_idle    (vctrl_fetch_idle),
       .fb_rdreq,
       .fb_raddr,

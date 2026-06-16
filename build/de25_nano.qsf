@@ -37,7 +37,7 @@ source scripts/misc_pin_assignments.tcl
 #source scripts/gpio_pin_assignments.tcl
 #source scripts/sdram_pin_assignments.tcl
 source scripts/lpddr4a_pin_assignments.tcl
-#source scripts/lpddr4b_pin_assignments.tcl
+source scripts/lpddr4b_pin_assignments.tcl
 source scripts/hdmi_pin_assignments.tcl
 #source scripts/cam_pin_assignments.tcl
 #source scripts/hps_pin_assignments.tcl
@@ -49,15 +49,22 @@ set_global_assignment -name IP_FILE ip/core_pll.ip
 set_global_assignment -name IP_FILE ip/hdmi_pll.ip
 set_global_assignment -name IP_FILE ip/agilex_hps.ip
 set_global_assignment -name IP_FILE ip/emif_io96b_hps.ip
-#set_global_assignment -name IP_FILE ip/ace5_translate.ip
+set_global_assignment -name IP_FILE ip/emif_io96b_fpga.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_axi_bridge_0.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_axi_bridge_1.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_axi_bridge_2.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_clock_in.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_reset_in.ip
+set_global_assignment -name QSYS_FILE ip/lpddr4b_vram.qsys
 
 # Add our RTL
 #============================================================
 # Define vendor (for bram inference)
 set_global_assignment -name VERILOG_MACRO "VENDOR_ALTERA=1"
 #set_global_assignment -name VERILOG_MACRO "ENABLE_FPGA2HPS=1"
-set_global_assignment -name VERILOG_MACRO "ENABLE_FPGA2SDRAM=1"
-#set_global_assignment -name VERILOG_MACRO "ENABLE_HPS2FPGA=1"
+#set_global_assignment -name VERILOG_MACRO "ENABLE_FPGA2SDRAM=1"
+set_global_assignment -name VERILOG_MACRO "ENABLE_HPS2FPGA=1"
+set_global_assignment -name VERILOG_MACRO "ENABLE_LPDDR4B=1"
 
 # Common library files
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/bram_pkg.sv
@@ -95,9 +102,13 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hdmi_output.sv
 # Top-level wrappers
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hps_wrapper.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/lw_ctrl_bridge.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/axil_driver_calibration.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/vctrl_wrapper.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/de25_nano_top.sv
 
 # And our constraints at the end
 #============================================================
 set_global_assignment -name SDC_FILE de25_nano.sdc
+set_global_assignment -name ENABLE_SIGNALTAP ON
+set_global_assignment -name USE_SIGNALTAP_FILE stp1.stp
+set_global_assignment -name SIGNALTAP_FILE stp1.stp
