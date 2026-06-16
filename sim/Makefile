@@ -8,7 +8,9 @@ PROJECT_ROOT	:= $(shell git rev-parse --show-toplevel)
 TARGET_ROOT	:= $(PROJECT_ROOT)/build
 
 GEN_IPS         := core_pll hdmi_pll reset_release
-GEN_IPS		+= agilex_hps emif_io96b_hps
+GEN_IPS		+= agilex_hps emif_io96b_hps emif_io96b_fpga
+GEN_IPS		+= lpddr4b_vram lpddr4b_vram_clock_in lpddr4b_vram_reset_in
+GEN_IPS		+= lpddr4b_vram_axi_bridge_0 lpddr4b_vram_axi_bridge_1
 GEN_IP_FILES    := $(GEN_IPS:%=%_files.f)
 GEN_VCS_FILES   := $(GEN_IPS:%=$(TARGET_ROOT)/ip/%/sim/common/vcsmx_files.tcl)
 GEN_IP_MEMFILES := $(GEN_IPS:%=%_memfiles.f)

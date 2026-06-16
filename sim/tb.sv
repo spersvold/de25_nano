@@ -31,6 +31,8 @@ module tb
    bit   result;
 
    initial begin
+      // this will cause %t to show simulation times using ns
+      $timeformat(-9,3," ns",13);
       if ($test$plusargs("DUMP")) begin
          $display("%t INFO: module=%m, starting dumpfile", $time);
 `ifdef HAVE_VCDPLUSON
@@ -48,6 +50,11 @@ module tb
    parameter real CLOCK_FREQ = 50.0; // MHz
    localparam CLOCK_PERIOD = 1000.0 / CLOCK_FREQ; // ns
    always #(CLOCK_PERIOD/2) clk = ~clk;
+
+   logic                        lpddr4clk = 1'b0;
+   parameter real LPDDR4_FREQ = 166.668; // MHz
+   localparam LPDDR4_PERIOD = 1000.0 / LPDDR4_FREQ; // ns
+   always #(LPDDR4_PERIOD/2) lpddr4clk = ~lpddr4clk;
 
    //
 
@@ -73,7 +80,7 @@ module tb
 `endif //  `ifdef ENABLE_SDRAM
 `ifdef ENABLE_LPDDR4A
    // LPDDR4A
-   wire                         LPDDR4A_REFCLK_p;
+   wire                         LPDDR4A_REFCLK_p = lpddr4clk;
    wire                         LPDDR4A_CS_n;
    wire [ 5: 0]                 LPDDR4A_CA;
    wire                         LPDDR4A_CK;
@@ -88,7 +95,7 @@ module tb
 `endif //  `ifdef ENABLE_LPDDR4A
 `ifdef ENABLE_LPDDR4B
    // LPDDR4B
-   wire                         LPDDR4B_REFCLK_p;
+   wire                         LPDDR4B_REFCLK_p = lpddr4clk;
    wire                         LPDDR4B_CS_n;
    wire [ 5: 0]                 LPDDR4B_CA;
    wire                         LPDDR4B_CK;
@@ -186,6 +193,141 @@ module tb
    de25_nano_top dut
      (.*);
 
+`ifndef VERILATOR
+`ifdef ENABLE_LPDDR4A
+   altera_emif_lpddr4_model_arch_top #
+     (.MEM_CS_WIDTH       (1),
+      .MEM_NUM_RANKS      (1),
+      .MEM_CKE_WIDTH      (1),
+      .MEM_CK_C_WIDTH     (1),
+      .MEM_CK_T_WIDTH     (1),
+      .MEM_BA_WIDTH       (3),
+      .MEM_ROW_ADDR_WIDTH (15),
+      .MEM_COL_ADDR_WIDTH (10),
+      .MEM_DQ_WIDTH       (32),
+      .MEM_CA_WIDTH       (6),
+      .MEM_DMI_WIDTH      (4),
+      .MEM_DQS_C_WIDTH    (4),
+      .MEM_DQS_T_WIDTH    (4),
+      .MEM_RESET_N_WIDTH  (1),
+      .MEM_VERBOSE        (0))
+   u_lpddr4a
+     (.mem_reset_n_0 (LPDDR4A_RESET_n),
+      .mem_zq_0      (),
+      //
+      .mem_cke_0     (LPDDR4A_CKE),
+      .mem_cs_0      (LPDDR4A_CS_n),
+      .mem_ca_0      (LPDDR4A_CA),
+      .mem_dq_0      (LPDDR4A_DQ),
+      .mem_dqs_t_0   (LPDDR4A_DQS),
+      .mem_dqs_c_0   (LPDDR4A_DQS_n),
+      .mem_dmi_0     (LPDDR4A_DM),
+      .mem_ck_t_0    (LPDDR4A_CK),
+      .mem_ck_c_0    (LPDDR4A_CK_n),
+      .oct_rzqin_0   (LPDDR4A_RZQ),
+      //
+      .mem_cke_1     (),
+      .mem_cs_1      (),
+      .mem_ca_1      (),
+      .mem_dq_1      (),
+      .mem_dqs_t_1   (),
+      .mem_dqs_c_1   (),
+      .mem_dmi_1     (),
+      .mem_ck_t_1    (),
+      .mem_ck_c_1    (),
+      .oct_rzqin_1   (),
+      //
+      .mem_cke_2     (),
+      .mem_cs_2      (),
+      .mem_ca_2      (),
+      .mem_dq_2      (),
+      .mem_dqs_t_2   (),
+      .mem_dqs_c_2   (),
+      .mem_dmi_2     (),
+      .mem_ck_t_2    (),
+      .mem_ck_c_2    (),
+      .oct_rzqin_2   (),
+      //
+      .mem_cke_3     (),
+      .mem_cs_3      (),
+      .mem_ca_3      (),
+      .mem_dq_3      (),
+      .mem_dqs_t_3   (),
+      .mem_dqs_c_3   (),
+      .mem_dmi_3     (),
+      .mem_ck_t_3    (),
+      .mem_ck_c_3    (),
+      .oct_rzqin_3   ()
+      );
+`endif //  `ifdef ENABLE_LPDDR4A
+`ifdef ENABLE_LPDDR4B
+   altera_emif_lpddr4_model_arch_top #
+     (.MEM_CS_WIDTH       (1),
+      .MEM_NUM_RANKS      (1),
+      .MEM_CKE_WIDTH      (1),
+      .MEM_CK_C_WIDTH     (1),
+      .MEM_CK_T_WIDTH     (1),
+      .MEM_BA_WIDTH       (3),
+      .MEM_ROW_ADDR_WIDTH (15),
+      .MEM_COL_ADDR_WIDTH (10),
+      .MEM_DQ_WIDTH       (32),
+      .MEM_CA_WIDTH       (6),
+      .MEM_DMI_WIDTH      (4),
+      .MEM_DQS_C_WIDTH    (4),
+      .MEM_DQS_T_WIDTH    (4),
+      .MEM_RESET_N_WIDTH  (1),
+      .MEM_VERBOSE        (0))
+   u_lpddr4b
+     (.mem_reset_n_0 (LPDDR4B_RESET_n),
+      .mem_zq_0      (),
+      //
+      .mem_cke_0     (LPDDR4B_CKE),
+      .mem_cs_0      (LPDDR4B_CS_n),
+      .mem_ca_0      (LPDDR4B_CA),
+      .mem_dq_0      (LPDDR4B_DQ),
+      .mem_dqs_t_0   (LPDDR4B_DQS),
+      .mem_dqs_c_0   (LPDDR4B_DQS_n),
+      .mem_dmi_0     (LPDDR4B_DM),
+      .mem_ck_t_0    (LPDDR4B_CK),
+      .mem_ck_c_0    (LPDDR4B_CK_n),
+      .oct_rzqin_0   (LPDDR4B_RZQ),
+      //
+      .mem_cke_1     (),
+      .mem_cs_1      (),
+      .mem_ca_1      (),
+      .mem_dq_1      (),
+      .mem_dqs_t_1   (),
+      .mem_dqs_c_1   (),
+      .mem_dmi_1     (),
+      .mem_ck_t_1    (),
+      .mem_ck_c_1    (),
+      .oct_rzqin_1   (),
+      //
+      .mem_cke_2     (),
+      .mem_cs_2      (),
+      .mem_ca_2      (),
+      .mem_dq_2      (),
+      .mem_dqs_t_2   (),
+      .mem_dqs_c_2   (),
+      .mem_dmi_2     (),
+      .mem_ck_t_2    (),
+      .mem_ck_c_2    (),
+      .oct_rzqin_2   (),
+      //
+      .mem_cke_3     (),
+      .mem_cs_3      (),
+      .mem_ca_3      (),
+      .mem_dq_3      (),
+      .mem_dqs_t_3   (),
+      .mem_dqs_c_3   (),
+      .mem_dmi_3     (),
+      .mem_ck_t_3    (),
+      .mem_ck_c_3    (),
+      .oct_rzqin_3   ()
+      );
+`endif //  `ifdef ENABLE_LPDDR4B
+`endif //  `ifndef VERILATOR
+
    // =====================================================================
    // HDMI PLL reconfiguration test
    //
@@ -203,6 +345,34 @@ module tb
    task automatic chk(input bit cond, input string msg);
       if (!cond) begin pll_errors++; $display("  FAIL: %s", msg); end
    endtask
+
+`ifndef VERILATOR
+   // ----------------------------------------------------------------------
+   // AXI VALID-stability checks. Once a *VALID is asserted it must stay
+   // asserted, with a stable payload, until *READY -- the exact rule the
+   // combinatorial vctrl_axim m_axi_arvalid broke (a vblank frame_sys retracted
+   // a not-yet-accepted AR and desynced the slave). These would have caught it
+   // and guard against regressions. VCS only (Verilator SVA support is partial).
+   // ----------------------------------------------------------------------
+   property p_valid_stable(valid, ready, payload);
+      @(posedge tb_clk_sys) disable iff (dut.rst_sys)
+        (valid && !ready) |=> (valid && $stable(payload));
+   endproperty
+
+   a_scanout_ar: assert property
+     (p_valid_stable(dut.u_vctrl_wrapper.u_vctrl_axim.m_axi_arvalid,
+                     dut.u_vctrl_wrapper.u_vctrl_axim.m_axi_arready,
+                     dut.u_vctrl_wrapper.u_vctrl_axim.m_axi_araddr))
+     else $error("%t SCANOUT m_axi: arvalid retracted or araddr changed before arready", $time);
+`ifdef ENABLE_HPS2FPGA
+   a_h2f_ar: assert property
+     (p_valid_stable(dut.hps2fpga_arvalid, dut.hps2fpga_arready, dut.hps2fpga_araddr))
+     else $error("%t HPS2FPGA: arvalid retracted or araddr changed before arready", $time);
+   a_h2f_aw: assert property
+     (p_valid_stable(dut.hps2fpga_awvalid, dut.hps2fpga_awready, dut.hps2fpga_awaddr))
+     else $error("%t HPS2FPGA: awvalid retracted or awaddr changed before awready", $time);
+`endif
+`endif //  `ifndef VERILATOR
 
    // ---- core_avl write-burst monitor (end-anchored, skew-proof) ----------
    bit          mon_active = 1'b0;
@@ -313,24 +483,276 @@ module tb
       drv_awaddr = off; drv_awvalid = 1'b1;
       drv_wdata  = data; drv_wstrb = 4'hF; drv_wlast = 1'b1; drv_wvalid = 1'b1;
       drv_bready = 1'b1;
-      while (!dut.lwhps2fpga_awready) begin @(posedge tb_clk_sys); #1; end
-      @(posedge tb_clk_sys); #1; drv_awvalid = 1'b0;
-      while (!dut.lwhps2fpga_wready)  begin @(posedge tb_clk_sys); #1; end
-      @(posedge tb_clk_sys); #1; drv_wvalid = 1'b0;
-      while (!dut.lwhps2fpga_bvalid)  begin @(posedge tb_clk_sys); #1; end
+      fork
+         begin : aw
+            wait (dut.lwhps2fpga_awready);
+            @(posedge tb_clk_sys); #1; drv_awvalid = 1'b0;
+         end
+         begin : w
+            wait (dut.lwhps2fpga_wready);
+            @(posedge tb_clk_sys); #1; drv_wvalid = 1'b0;
+         end
+      join
+      wait (dut.lwhps2fpga_bvalid);
       @(posedge tb_clk_sys); #1; drv_bready = 1'b0;
+      $display("%t CSR_WRITE: off=%h, data=%h", $time, off, data);
    endtask
 
    // Single-beat AXI read.
    task automatic csr_read(input logic [28:0] off, output logic [31:0] data);
       @(posedge tb_clk_sys); #1;
       drv_araddr = off; drv_arvalid = 1'b1; drv_rready = 1'b1;
-      while (!dut.lwhps2fpga_arready) begin @(posedge tb_clk_sys); #1; end
+      wait (dut.lwhps2fpga_arready);
       @(posedge tb_clk_sys); #1; drv_arvalid = 1'b0;
-      while (!dut.lwhps2fpga_rvalid)  begin @(posedge tb_clk_sys); #1; end
+      wait (dut.lwhps2fpga_rvalid);
       data = dut.lwhps2fpga_rdata;
+      $display("%t CSR_READ: off=%h, data=%h", $time, off, data);
       @(posedge tb_clk_sys); #1; drv_rready = 1'b0;
    endtask
+
+`ifdef ENABLE_HPS2FPGA
+   // =====================================================================
+   // HPS2FPGA (full h2f) AXI4 master BFM + scanout/crossbar observation.
+   //
+   // The HPS is a black box in sim, so -- exactly like the lwhps2fpga CSR
+   // path above -- we `force` the h2f master signals onto static driver regs
+   // and drive 128-bit write bursts. This exercises the 128->256 axi_adapter
+   // and the crossbar arbitration against the vctrl scanout master, all the
+   // way into the behavioural EMIF model. h2f is synchronous to clk_sys.
+   // =====================================================================
+   logic [ 3:0]  h2_awid;   logic [31:0]  h2_awaddr;  logic [ 7:0] h2_awlen;
+   logic [ 2:0]  h2_awsize; logic [ 1:0]  h2_awburst; logic        h2_awlock;
+   logic [ 3:0]  h2_awcache;logic [ 2:0]  h2_awprot;  logic        h2_awvalid;
+   logic [127:0] h2_wdata;  logic [15:0]  h2_wstrb;   logic        h2_wlast;
+   logic         h2_wvalid; logic         h2_bready;
+   logic [ 3:0]  h2_arid;   logic [31:0]  h2_araddr;  logic [ 7:0] h2_arlen;
+   logic [ 2:0]  h2_arsize; logic [ 1:0]  h2_arburst; logic        h2_arlock;
+   logic [ 3:0]  h2_arcache;logic [ 2:0]  h2_arprot;  logic        h2_arvalid;
+   logic         h2_rready;
+
+   task automatic h2f_init;
+      h2_awid=4'hA; h2_awaddr='0; h2_awlen='0; h2_awsize=3'd4; h2_awburst=2'b01;
+      h2_awlock='0; h2_awcache='0; h2_awprot='0; h2_awvalid=1'b0;
+      h2_wdata='0; h2_wstrb='0; h2_wlast=1'b0; h2_wvalid=1'b0; h2_bready=1'b0;
+      h2_arid=4'hD; h2_araddr='0; h2_arlen='0; h2_arsize=3'd4; h2_arburst=2'b01;
+      h2_arlock='0; h2_arcache='0; h2_arprot='0; h2_arvalid=1'b0; h2_rready=1'b0;
+      force dut.hps2fpga_awid    = h2_awid;
+      force dut.hps2fpga_awaddr  = h2_awaddr;
+      force dut.hps2fpga_awlen   = h2_awlen;
+      force dut.hps2fpga_awsize  = h2_awsize;
+      force dut.hps2fpga_awburst = h2_awburst;
+      force dut.hps2fpga_awlock  = h2_awlock;
+      force dut.hps2fpga_awcache = h2_awcache;
+      force dut.hps2fpga_awprot  = h2_awprot;
+      force dut.hps2fpga_awvalid = h2_awvalid;
+      force dut.hps2fpga_wdata   = h2_wdata;
+      force dut.hps2fpga_wstrb   = h2_wstrb;
+      force dut.hps2fpga_wlast   = h2_wlast;
+      force dut.hps2fpga_wvalid  = h2_wvalid;
+      force dut.hps2fpga_bready  = h2_bready;
+      force dut.hps2fpga_arid    = h2_arid;
+      force dut.hps2fpga_araddr  = h2_araddr;
+      force dut.hps2fpga_arlen   = h2_arlen;
+      force dut.hps2fpga_arsize  = h2_arsize;
+      force dut.hps2fpga_arburst = h2_arburst;
+      force dut.hps2fpga_arlock  = h2_arlock;
+      force dut.hps2fpga_arcache = h2_arcache;
+      force dut.hps2fpga_arprot  = h2_arprot;
+      force dut.hps2fpga_arvalid = h2_arvalid;
+      force dut.hps2fpga_rready  = h2_rready;
+   endtask
+
+   task automatic h2f_idle;
+      h2_awvalid=1'b0; h2_wvalid=1'b0; h2_wlast=1'b0; h2_bready=1'b0;
+      h2_arvalid=1'b0; h2_rready=1'b0;
+   endtask
+
+   // 128-bit INCR write burst: `beats` beats at byte `addr`, data an
+   // incrementing pattern from `seed` (one 32-bit word per lane).
+   task automatic h2f_write_burst(input logic [31:0] addr, input int beats,
+                                  input logic [31:0] seed);
+      int i;
+      @(posedge tb_clk_sys); #1;
+      h2_awaddr = addr; h2_awlen = 8'(beats-1); h2_awsize = 3'd4;
+      h2_awburst = 2'b01; h2_awvalid = 1'b1; h2_bready = 1'b1;
+      fork
+         begin : aw
+            wait (dut.hps2fpga_awready);
+            @(posedge tb_clk_sys); #1; h2_awvalid = 1'b0;
+         end
+         begin : w
+            for (i = 0; i < beats; i++) begin
+               h2_wdata = {seed + 32'(4*i+3), seed + 32'(4*i+2),
+                           seed + 32'(4*i+1), seed + 32'(4*i+0)};
+               h2_wstrb = 16'hFFFF; h2_wlast = (i == beats-1); h2_wvalid = 1'b1;
+               wait (dut.hps2fpga_wready);
+               @(posedge tb_clk_sys); #1;
+            end
+            h2_wvalid = 1'b0; h2_wlast = 1'b0;
+         end
+      join
+      wait (dut.hps2fpga_bvalid);
+      @(posedge tb_clk_sys); #1; h2_bready = 1'b0;
+   endtask
+
+   // 128-bit INCR read burst at byte `addr`; checks each returned beat against
+   // the incrementing pattern h2f_write_burst(.,.,seed) would have written.
+   // This is the read direction through the crossbar (slave 1) and the
+   // axi_adapter 256->128 DOWN-size -- the path suspected broken. Returns the
+   // mismatch count in `bad`.
+   task automatic h2f_read_burst(input  logic [31:0] addr, input int beats,
+                                 input  logic [31:0] seed, output int bad);
+      int i;
+      logic [127:0] exp;
+      bad = 0;
+      @(posedge tb_clk_sys); #1;
+      h2_araddr = addr; h2_arlen = 8'(beats-1); h2_arsize = 3'd4;
+      h2_arburst = 2'b01; h2_arvalid = 1'b1; h2_rready = 1'b1;
+      fork
+         begin : ar
+            wait (dut.hps2fpga_arready);
+            @(posedge tb_clk_sys); #1; h2_arvalid = 1'b0;
+         end
+         begin : r
+            for (i = 0; i < beats; i++) begin
+               wait (dut.hps2fpga_rvalid);
+               exp = {seed + 32'(4*i+3), seed + 32'(4*i+2),
+                      seed + 32'(4*i+1), seed + 32'(4*i+0)};
+               if (dut.hps2fpga_rdata !== exp) begin
+                  bad++;
+                  if (bad <= 4)
+                    $display("  [h2f-rd] beat %0d @0x%08h: got 0x%032h exp 0x%032h",
+                             i, addr + 32'(16*i), dut.hps2fpga_rdata, exp);
+               end
+               if (i == beats-1)
+                 chk(dut.hps2fpga_rlast, "h2f read: rlast not set on final beat");
+               @(posedge tb_clk_sys); #1;
+            end
+            h2_rready = 1'b0;
+         end
+      join
+   endtask
+
+   // Single 32-bit WRITE (arsize=2, arlen=0, wstrb on the addressed lane only)
+   // -- mimics a CPU/devmem 32-bit store through the 128-bit h2f bridge. The
+   // adapter must place these 4 bytes on the correct lane of the 256-bit master
+   // with a matching narrow wstrb (a partial/sub-slave-width write).
+   task automatic h2f_write32(input logic [31:0] addr, input logic [31:0] data);
+      logic [1:0] lane;
+      lane = addr[3:2];
+      @(posedge tb_clk_sys); #1;
+      h2_awaddr = addr; h2_awlen = 8'd0; h2_awsize = 3'd2; h2_awburst = 2'b01;
+      h2_awvalid = 1'b1; h2_bready = 1'b1;
+      h2_wdata = '0; h2_wdata[lane*32 +: 32] = data;
+      h2_wstrb = '0; h2_wstrb[lane*4  +: 4] = 4'hF;
+      h2_wlast = 1'b1; h2_wvalid = 1'b1;
+      fork
+         begin : aw
+            wait (dut.hps2fpga_awready);
+            @(posedge tb_clk_sys); #1; h2_awvalid = 1'b0;
+         end
+         begin : w
+            wait (dut.hps2fpga_wready);
+            @(posedge tb_clk_sys); #1; h2_wvalid = 1'b0; h2_wlast = 1'b0;
+         end
+      join
+      wait (dut.hps2fpga_bvalid);
+      @(posedge tb_clk_sys); #1; h2_bready = 1'b0;
+      $display("%t H2F_WR32: @0x%08h lane%0d data=0x%08h", $time, addr, lane, data);
+   endtask
+
+   // Single 32-bit READ (arsize=2, arlen=0) -- mimics a CPU/devmem 32-bit load
+   // through the 128-bit h2f bridge. Captures the addressed 32-bit lane of the
+   // returned beat and checks it. This is the partial-read path the host
+   // devmem readback uses, distinct from the full-width burst above.
+   task automatic h2f_read32(input logic [31:0] addr, input logic [31:0] exp);
+      logic [1:0]  lane;
+      logic [31:0] got;
+      lane = addr[3:2];
+      @(posedge tb_clk_sys); #1;
+      h2_araddr = addr; h2_arlen = 8'd0; h2_arsize = 3'd2; h2_arburst = 2'b01;
+      h2_arvalid = 1'b1; h2_rready = 1'b1;
+      fork
+         begin : ar
+            wait (dut.hps2fpga_arready);
+            @(posedge tb_clk_sys); #1; h2_arvalid = 1'b0;
+         end
+         begin : r
+            wait (dut.hps2fpga_rvalid);
+            got = dut.hps2fpga_rdata[lane*32 +: 32];
+            chk(dut.hps2fpga_rlast, "h2f read32: rlast not set on single beat");
+            @(posedge tb_clk_sys); #1; h2_rready = 1'b0;
+         end
+      join
+      chk(got === exp,
+          $sformatf("h2f read32 @0x%08h lane%0d: got 0x%08h exp 0x%08h", addr, lane, got, exp));
+      $display("%t H2F_RD32: @0x%08h lane%0d -> 0x%08h (exp 0x%08h)%s",
+               $time, addr, lane, got, exp, (got === exp) ? " OK" : " MISMATCH");
+   endtask
+
+   // WRAP cache-line read with arcache[1]=1 -- the exact access that wedges the
+   // hardware (ARM linefill / login readback). arburst=WRAP + arcache modifiable
+   // + full-slave-width beats drives the adapter into its burst-convert/split
+   // path, which mishandles WRAP (illegal master burst + phantom early R beats).
+   // With CONVERT_BURST=0 on u_axi_adapter the narrow path is taken and this
+   // completes cleanly. beats must be power-of-2; addr is NOT 256b-aligned.
+   // Bounded waits so a wedge reports instead of hanging the sim.
+   task automatic h2f_read_wrap(input logic [31:0] addr, input int beats);
+      int i, tmo;
+      bit wedged;
+      wedged = 1'b0;
+      @(posedge tb_clk_sys); #1;
+      h2_araddr = addr; h2_arlen = 8'(beats-1); h2_arsize = 3'd4;
+      h2_arburst = 2'b10; h2_arcache = 4'h2;        // WRAP + Normal/Modifiable
+      h2_arvalid = 1'b1; h2_rready = 1'b1;
+      tmo = 0;
+      while (!dut.hps2fpga_arready && tmo < 1000) begin @(posedge tb_clk_sys); #1; tmo++; end
+      @(posedge tb_clk_sys); #1; h2_arvalid = 1'b0;
+      for (i = 0; i < beats; i++) begin
+         tmo = 0;
+         while (!dut.hps2fpga_rvalid && tmo < 4000) begin @(posedge tb_clk_sys); #1; tmo++; end
+         if (tmo >= 4000) begin wedged = 1'b1; break; end
+         if (i == beats-1)
+           chk(dut.hps2fpga_rlast, "h2f WRAP read: rlast not on final beat");
+         @(posedge tb_clk_sys); #1;
+      end
+      h2_arvalid = 1'b0; h2_rready = 1'b0; h2_arcache = 4'h0;
+      chk(!wedged,
+          $sformatf("h2f WRAP read @0x%08h WEDGED -- adapter burst-convert WRAP bug", addr));
+      $display("%t H2F_RD_WRAP: @0x%08h beats=%0d %s", $time, addr, beats,
+               wedged ? "*** WEDGED (bug reproduced) ***" : "completed OK");
+   endtask
+
+   // ---- scanout / crossbar / EMIF activity monitor ----------------------
+   int           scan_ar = 0, scan_r = 0, emif_ar = 0, emif_aw = 0, emif_w = 0;
+   int           h2f_r = 0, m1_r = 0;   // 128b beats to HPS vs 256b beats from xbar
+   logic [255:0] first_rdata;
+   bit           got_first = 1'b0;
+   always @(posedge tb_clk_sys) begin
+      if (dut.u_vctrl_wrapper.m_axi_arvalid && dut.u_vctrl_wrapper.m_axi_arready)
+        scan_ar++;
+      if (dut.u_vctrl_wrapper.m_axi_rvalid && dut.u_vctrl_wrapper.m_axi_rready) begin
+         scan_r++;
+         if (!got_first) begin
+            first_rdata = dut.u_vctrl_wrapper.m_axi_rdata;
+            got_first = 1'b1;
+         end
+      end
+`ifdef FIXME
+      if (dut.u_vctrl_wrapper.s0_axi4_arvalid && dut.u_vctrl_wrapper.s0_axi4_arready)
+        emif_ar++;
+      if (dut.u_vctrl_wrapper.s0_axi4_awvalid && dut.u_vctrl_wrapper.s0_axi4_awready)
+        emif_aw++;
+      if (dut.u_vctrl_wrapper.s0_axi4_wvalid && dut.u_vctrl_wrapper.s0_axi4_wready)
+        emif_w++;
+      // adapter read downsize: 256b beats in (m1_axi) vs 128b beats out (hps2fpga)
+      if (dut.u_vctrl_wrapper.m1_axi_rvalid && dut.u_vctrl_wrapper.m1_axi_rready)
+        m1_r++;
+`endif
+      if (dut.hps2fpga_rvalid && dut.hps2fpga_rready)
+        h2f_r++;
+   end
+`endif //  `ifdef ENABLE_HPS2FPGA
 
    // Full reconfig sequence + checks. M=32, N=4, C=10.
    task automatic pll_recfg_test;
@@ -364,7 +786,7 @@ module tb
 
       // poll until busy clears (apply -> FSM -> done CDC round-trip)
       to = 0;
-      do begin csr_read(PLLCTRL_OFF, rd); to++; end while (rd[0] && to < 8000);
+      do begin csr_read(PLLCTRL_OFF, rd); #1000; to++; end while (rd[0] && to < 100);
       chk(rd[0] == 1'b0, "apply did not clear (busy stuck)");
 
       // Both PLL models now end locked: the Verilator stub (drops/relocks on
@@ -427,7 +849,7 @@ module tb
       csr_write(PLLCTRL_OFF, 32'h0000_0001);       // apply = 1
 
       to = 0;
-      do begin csr_read(PLLCTRL_OFF, rd); to++; end while (rd[0] && to < 20000);
+      do begin csr_read(PLLCTRL_OFF, rd); #1000; to++; end while (rd[0] && to < 200);
       repeat (32) @(posedge clk);
 
       foreach (seq_addr[i]) begin
@@ -513,6 +935,127 @@ module tb
       $display("################ end PLL config sweep ################");
    endtask
 
+`ifdef ENABLE_HPS2FPGA
+   // VRAM scanout + h2f arbitration test. Pre-fills the framebuffer through the
+   // h2f write path (128->256 adapter + crossbar slave 1), programs a tiny video
+   // mode, enables scanout, and runs a few frames while firing concurrent h2f
+   // writes -- so the vctrl scanout master (crossbar slave 0) and the h2f writer
+   // contend for the EMIF. Reports whether the scanout master actually issues
+   // reads (the symptom seen on hardware) and echoes the first read word for an
+   // end-to-end check against the pre-filled pattern.
+   task automatic vram_scanout_test;
+      int to;
+      int rd_bad;
+
+      $display("");
+      $display("################ VRAM scanout + h2f arbitration test ################");
+      $fflush();
+      csr_init();
+      h2f_init();
+
+      // system up: reset released, pixel PLL locked, EMIF calibrated.
+      to = 0;
+      while ((dut.rst_sys || !dut.por_rstn || !dut.hdmi_pll_locked ||
+              !dut.u_vctrl_wrapper.vctrl_init_done) && to < 400000) begin
+         @(posedge tb_clk_sys); to++;
+      end
+      chk(!dut.rst_sys, "rst_sys still asserted");
+      chk(dut.u_vctrl_wrapper.vctrl_init_done, "EMIF cal (vctrl_init_done) never asserted");
+      $display("[vram] system up (vctrl_init_done=%0b) after %0d clk_sys cycles",
+               dut.u_vctrl_wrapper.vctrl_init_done, to);
+      $fflush();
+
+      // Pre-fill framebuffer @ VRAM offset 0: 64 x 128-bit beats = 1 KiB.
+      $display("[vram] h2f pre-fill: 64 x 128b INCR burst @ 0x0 (exercises 128->256)");
+      $fflush();
+      h2f_write_burst(32'h0000_0000, 64, 32'h1000_0000);
+      $display("[vram] h2f pre-fill: DONE");
+      $fflush();
+
+      // Read the pre-filled region straight back through h2f, isolated from the
+      // scanout. This is the suspected path: crossbar slave-1 read + axi_adapter
+      // 256->128 down-size. Each 128b beat is checked against the written pattern.
+      h2f_read_burst(32'h0000_0000, 64, 32'h1000_0000, rd_bad);
+      chk(rd_bad == 0,
+          $sformatf("h2f readback: %0d/64 beats mismatched (axi_adapter 256->128 read)", rd_bad));
+      $display("[vram] h2f readback @0x0: %0d/64 beats mismatched%s",
+               rd_bad, (rd_bad == 0) ? " -- adapter read path OK" : "");
+      $fflush();
+
+      // Reproduce the failing host devmem path: a single 32-bit store followed
+      // by single 32-bit loads (arsize=2, arlen=0) through the 128-bit h2f
+      // bridge -- the partial/sub-slave-width access the adapter must lane-align.
+      $display("[vram] devmem-style 32-bit round trip + lane/half sweep:");
+      h2f_write32(32'h0000_0000, 32'hDEAD_BEEF);
+      // word 0 is now DEADBEEF; words 1..7 keep the pre-fill (seed + w). Sweeping
+      // 0x00..0x1C covers all 4 lanes AND both 128-bit halves of 256b word 0,
+      // and confirms the narrow write hit ONLY lane 0.
+      for (int w = 0; w < 8; w++)
+         h2f_read32(32'(4*w), (w == 0) ? 32'hDEAD_BEEF : (32'h1000_0000 + 32'(w)));
+      $fflush();
+
+      // Tiny mode so a frame is short in sim: 32x8 visible, 40x12 total, 32bpp.
+      csr_write(29'h008, (1 << 24) | (3 << 16) | (32 - 1)); // HTIM  hsw=2 hbp=4 hdisp=32
+      csr_write(29'h00c, (0 << 24) | (1 << 16) | (8 - 1));  // VTIM  vsw=1 vbp=2 vdisp=8
+      csr_write(29'h010, ((40 - 1) << 16) | (12 - 1));      // HVLEN htot=40 vtot=12
+      csr_write(29'h014, 32'h0000_0000);                    // VBARA = offset 0
+      csr_write(29'h018, 32'd1024);                         // VSIZ  = 32*8*4
+      csr_write(29'h020, 32'h0000_0000);                    // PITCH pad = 0
+      csr_write(29'h000, 32'h0000_0001 | 32'h0000_0180 | 32'h0000_0600); // VEN|VBL8|CD32
+      $display("[vram] scanout enabled (CTRL=0x781, VBAR=0, VSIZ=1024)");
+
+      scan_ar=0; scan_r=0; emif_ar=0; emif_aw=0; emif_w=0; got_first=1'b0;
+
+      // Run frames while hammering the write port at a separate VRAM region, so
+      // the crossbar must arbitrate scanout reads (slave 0) vs h2f writes (slave 1).
+      fork
+         begin : traffic
+            int t_bad;
+            forever begin
+               h2f_write_burst(32'h0000_2000, 16, 32'h2000_0000);
+               // read the (stable) pre-fill region back while scanout also reads
+               // it -- exercises crossbar read arbitration + the adapter downsize.
+               h2f_read_burst(32'h0000_0000, 16, 32'h1000_0000, t_bad);
+               chk(t_bad == 0, "h2f concurrent readback mismatch (adapter under arbitration)");
+               repeat (200) @(posedge tb_clk_sys);
+            end
+         end
+         begin : frames
+            repeat (8000) @(posedge tb_clk_sys);
+         end
+      join_any
+      disable traffic;
+      h2f_idle();
+
+      $display("[vram] scanout AR granted    : %0d", scan_ar);
+      $display("[vram] scanout R beats        : %0d", scan_r);
+      $display("[vram] EMIF AR (xbar->emif)   : %0d", emif_ar);
+      $display("[vram] EMIF AW (xbar->emif)   : %0d", emif_aw);
+      $display("[vram] EMIF W beats           : %0d", emif_w);
+      $display("[vram] h2f read 128b beats    : %0d (HPS side)", h2f_r);
+      $display("[vram] adapter 256b read beats: %0d (xbar side; expect ~h2f/2)", m1_r);
+      if (got_first)
+        $display("[vram] first scanout 256b word: 0x%064h", first_rdata);
+
+      chk(scan_ar > 0, "vctrl_axim issued NO reads (reproduces the HW symptom)");
+      chk(scan_r  > 0, "scanout received NO read data");
+      chk(emif_aw > 0, "no h2f writes reached the EMIF through the crossbar");
+
+      if (scan_ar > 0 && scan_r > 0)
+        $display("[vram] PASS: scanout reads flow through the crossbar to the EMIF");
+      else
+        $display("[vram] FAIL: scanout master is not reading -- matches hardware");
+
+      // Reproduce the hardware lockup: a WRAP cache-line read (arcache[1]=1) like
+      // an ARM linefill / the login readback. Wedges with the adapter's default
+      // burst-convert path; completes with CONVERT_BURST=0 on u_axi_adapter.
+      $display("[vram] WRAP cache-line read repro (arburst=WRAP, arcache=0x2 @ 0x70):");
+      h2f_read_wrap(32'h0000_0070, 4);
+
+      $display("################ end VRAM scanout test ################");
+   endtask
+`endif //  `ifdef ENABLE_HPS2FPGA
+
    //
 
    longint unsigned expectedRunTime;
@@ -548,6 +1091,9 @@ module tb
 
 //         avl_dump_all("initial / IP-generated config");
          pll_recfg_test();
+`ifdef ENABLE_HPS2FPGA
+         vram_scanout_test();
+`endif
 //         pll_sweep();
 //         avl_dump_all("final / after sweep");
 
