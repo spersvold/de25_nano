@@ -10,7 +10,9 @@ ip/core_pll/
 ip/hdmi_pll/
 ip/agilex_hps/
 ip/emif_io96b_hps/
+ip/emif_io96b_fpga/
 ip/ace5_translate/
+ip/lpddr4b_vram*/
 *.qws
 *.~*
 *.log
@@ -26,5 +28,6 @@ ip/ace5_translate/
 *.qdf
 *.json
 *.sopcinfo
+board.info
 quartus.*
 tmp-clearbox

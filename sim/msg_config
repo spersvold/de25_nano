@@ -28,6 +28,11 @@
 //       to hand-maintain their paths here.
 //
 {
+ // Warning-[AOUP] Attempt to override undefined parameter
+ -suppress=AOUP;
+ //@IP_FILES@
+}
+{
  // Warning-[OSPA-N] Overriding same parameter again
  -suppress=OSPA-N;
 }

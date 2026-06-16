@@ -17,7 +17,7 @@ VCS_FLAGS	:= -q -nc -debug_acc+pp -timescale=1ns/1ps -sverilog -assert svaext +d
 VCS_FLAGS	+= -xlrm uniq_prior_final
 
 VERILATOR	:= $(VERILATOR_HOME)/bin/verilator
-VERI_OPTS	:= --timing --trace-fst --top-module tb --timescale 1ns/1ps -j $(NPROC) -O3 +1800-2012ext+sv +1364-2001ext+v
+VERI_OPTS	:= --timing --trace-fst --top-module tb --timescale 1ns/1ps -j $(NPROC) -O3
 
 SIMBIN		:= simv
 VERIBIN		:= obj_dir/Vtb

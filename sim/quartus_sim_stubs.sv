@@ -510,6 +510,10 @@ module agilex_hps (
 		output wire [2:0]   io96b0_to_hps_axi4_ch0_arprot,
 		output wire [2:0]   io96b0_to_hps_axi4_ch0_awprot
 	);
+
+   assign h2f_reset_reset = 1'b0;
+   assign h2f_warm_reset_handshake_reset_req = 1'b1;
+
 endmodule
 
 
@@ -694,3 +698,358 @@ module ace5_translate #(
 		output wire [7:0]   s_axi_ruser
 	);
 endmodule
+
+module lpddr4b_vram (
+		output wire [5:0]   m_axi_awid,              //       m_axi.awid
+		output wire [30:0]  m_axi_awaddr,            //            .awaddr
+		output wire [7:0]   m_axi_awlen,             //            .awlen
+		output wire [2:0]   m_axi_awsize,            //            .awsize
+		output wire [1:0]   m_axi_awburst,           //            .awburst
+		output wire [0:0]   m_axi_awlock,            //            .awlock
+		output wire [3:0]   m_axi_awcache,           //            .awcache
+		output wire [2:0]   m_axi_awprot,            //            .awprot
+		output wire [3:0]   m_axi_awqos,             //            .awqos
+		output wire         m_axi_awvalid,           //            .awvalid
+		input  wire         m_axi_awready,           //            .awready
+		output wire [255:0] m_axi_wdata,             //            .wdata
+		output wire [31:0]  m_axi_wstrb,             //            .wstrb
+		output wire         m_axi_wlast,             //            .wlast
+		output wire         m_axi_wvalid,            //            .wvalid
+		input  wire         m_axi_wready,            //            .wready
+		input  wire [5:0]   m_axi_bid,               //            .bid
+		input  wire [1:0]   m_axi_bresp,             //            .bresp
+		input  wire         m_axi_bvalid,            //            .bvalid
+		output wire         m_axi_bready,            //            .bready
+		output wire [5:0]   m_axi_arid,              //            .arid
+		output wire [30:0]  m_axi_araddr,            //            .araddr
+		output wire [7:0]   m_axi_arlen,             //            .arlen
+		output wire [2:0]   m_axi_arsize,            //            .arsize
+		output wire [1:0]   m_axi_arburst,           //            .arburst
+		output wire [0:0]   m_axi_arlock,            //            .arlock
+		output wire [3:0]   m_axi_arcache,           //            .arcache
+		output wire [2:0]   m_axi_arprot,            //            .arprot
+		output wire [3:0]   m_axi_arqos,             //            .arqos
+		output wire         m_axi_arvalid,           //            .arvalid
+		input  wire         m_axi_arready,           //            .arready
+		input  wire [5:0]   m_axi_rid,               //            .rid
+		input  wire [255:0] m_axi_rdata,             //            .rdata
+		input  wire [1:0]   m_axi_rresp,             //            .rresp
+		input  wire         m_axi_rlast,             //            .rlast
+		input  wire         m_axi_rvalid,            //            .rvalid
+		output wire         m_axi_rready,            //            .rready
+		input  wire [3:0]   s0_axi4_awid,            //     s0_axi4.awid
+		input  wire [31:0]  s0_axi4_awaddr,          //            .awaddr
+		input  wire [7:0]   s0_axi4_awlen,           //            .awlen
+		input  wire [2:0]   s0_axi4_awsize,          //            .awsize
+		input  wire [1:0]   s0_axi4_awburst,         //            .awburst
+		input  wire [0:0]   s0_axi4_awlock,          //            .awlock
+		input  wire [3:0]   s0_axi4_awcache,         //            .awcache
+		input  wire [2:0]   s0_axi4_awprot,          //            .awprot
+		input  wire [3:0]   s0_axi4_awqos,           //            .awqos
+		input  wire         s0_axi4_awvalid,         //            .awvalid
+		output wire         s0_axi4_awready,         //            .awready
+		input  wire [127:0] s0_axi4_wdata,           //            .wdata
+		input  wire [15:0]  s0_axi4_wstrb,           //            .wstrb
+		input  wire         s0_axi4_wlast,           //            .wlast
+		input  wire         s0_axi4_wvalid,          //            .wvalid
+		output wire         s0_axi4_wready,          //            .wready
+		output wire [3:0]   s0_axi4_bid,             //            .bid
+		output wire [1:0]   s0_axi4_bresp,           //            .bresp
+		output wire         s0_axi4_bvalid,          //            .bvalid
+		input  wire         s0_axi4_bready,          //            .bready
+		input  wire [3:0]   s0_axi4_arid,            //            .arid
+		input  wire [31:0]  s0_axi4_araddr,          //            .araddr
+		input  wire [7:0]   s0_axi4_arlen,           //            .arlen
+		input  wire [2:0]   s0_axi4_arsize,          //            .arsize
+		input  wire [1:0]   s0_axi4_arburst,         //            .arburst
+		input  wire [0:0]   s0_axi4_arlock,          //            .arlock
+		input  wire [3:0]   s0_axi4_arcache,         //            .arcache
+		input  wire [2:0]   s0_axi4_arprot,          //            .arprot
+		input  wire [3:0]   s0_axi4_arqos,           //            .arqos
+		input  wire         s0_axi4_arvalid,         //            .arvalid
+		output wire         s0_axi4_arready,         //            .arready
+		output wire [3:0]   s0_axi4_rid,             //            .rid
+		output wire [127:0] s0_axi4_rdata,           //            .rdata
+		output wire [1:0]   s0_axi4_rresp,           //            .rresp
+		output wire         s0_axi4_rlast,           //            .rlast
+		output wire         s0_axi4_rvalid,          //            .rvalid
+		input  wire         s0_axi4_rready,          //            .rready
+		input  wire [3:0]   s1_axi4_awid,            //     s1_axi4.awid
+		input  wire [31:0]  s1_axi4_awaddr,          //            .awaddr
+		input  wire [7:0]   s1_axi4_awlen,           //            .awlen
+		input  wire [2:0]   s1_axi4_awsize,          //            .awsize
+		input  wire [1:0]   s1_axi4_awburst,         //            .awburst
+		input  wire [0:0]   s1_axi4_awlock,          //            .awlock
+		input  wire [3:0]   s1_axi4_awcache,         //            .awcache
+		input  wire [2:0]   s1_axi4_awprot,          //            .awprot
+		input  wire [3:0]   s1_axi4_awqos,           //            .awqos
+		input  wire         s1_axi4_awvalid,         //            .awvalid
+		output wire         s1_axi4_awready,         //            .awready
+		input  wire [255:0] s1_axi4_wdata,           //            .wdata
+		input  wire [31:0]  s1_axi4_wstrb,           //            .wstrb
+		input  wire         s1_axi4_wlast,           //            .wlast
+		input  wire         s1_axi4_wvalid,          //            .wvalid
+		output wire         s1_axi4_wready,          //            .wready
+		output wire [3:0]   s1_axi4_bid,             //            .bid
+		output wire [1:0]   s1_axi4_bresp,           //            .bresp
+		output wire         s1_axi4_bvalid,          //            .bvalid
+		input  wire         s1_axi4_bready,          //            .bready
+		input  wire [3:0]   s1_axi4_arid,            //            .arid
+		input  wire [31:0]  s1_axi4_araddr,          //            .araddr
+		input  wire [7:0]   s1_axi4_arlen,           //            .arlen
+		input  wire [2:0]   s1_axi4_arsize,          //            .arsize
+		input  wire [1:0]   s1_axi4_arburst,         //            .arburst
+		input  wire [0:0]   s1_axi4_arlock,          //            .arlock
+		input  wire [3:0]   s1_axi4_arcache,         //            .arcache
+		input  wire [2:0]   s1_axi4_arprot,          //            .arprot
+		input  wire [3:0]   s1_axi4_arqos,           //            .arqos
+		input  wire         s1_axi4_arvalid,         //            .arvalid
+		output wire         s1_axi4_arready,         //            .arready
+		output wire [3:0]   s1_axi4_rid,             //            .rid
+		output wire [255:0] s1_axi4_rdata,           //            .rdata
+		output wire [1:0]   s1_axi4_rresp,           //            .rresp
+		output wire         s1_axi4_rlast,           //            .rlast
+		output wire         s1_axi4_rvalid,          //            .rvalid
+		input  wire         s1_axi4_rready,          //            .rready
+		input  wire [3:0]   s2_axi4_awid,            //     s2_axi4.awid
+		input  wire [31:0]  s2_axi4_awaddr,          //            .awaddr
+		input  wire [7:0]   s2_axi4_awlen,           //            .awlen
+		input  wire [2:0]   s2_axi4_awsize,          //            .awsize
+		input  wire [1:0]   s2_axi4_awburst,         //            .awburst
+		input  wire [0:0]   s2_axi4_awlock,          //            .awlock
+		input  wire [3:0]   s2_axi4_awcache,         //            .awcache
+		input  wire [2:0]   s2_axi4_awprot,          //            .awprot
+		input  wire [3:0]   s2_axi4_awqos,           //            .awqos
+		input  wire         s2_axi4_awvalid,         //            .awvalid
+		output wire         s2_axi4_awready,         //            .awready
+		input  wire [255:0] s2_axi4_wdata,           //            .wdata
+		input  wire [31:0]  s2_axi4_wstrb,           //            .wstrb
+		input  wire         s2_axi4_wlast,           //            .wlast
+		input  wire         s2_axi4_wvalid,          //            .wvalid
+		output wire         s2_axi4_wready,          //            .wready
+		output wire [3:0]   s2_axi4_bid,             //            .bid
+		output wire [1:0]   s2_axi4_bresp,           //            .bresp
+		output wire         s2_axi4_bvalid,          //            .bvalid
+		input  wire         s2_axi4_bready,          //            .bready
+		input  wire [3:0]   s2_axi4_arid,            //            .arid
+		input  wire [31:0]  s2_axi4_araddr,          //            .araddr
+		input  wire [7:0]   s2_axi4_arlen,           //            .arlen
+		input  wire [2:0]   s2_axi4_arsize,          //            .arsize
+		input  wire [1:0]   s2_axi4_arburst,         //            .arburst
+		input  wire [0:0]   s2_axi4_arlock,          //            .arlock
+		input  wire [3:0]   s2_axi4_arcache,         //            .arcache
+		input  wire [2:0]   s2_axi4_arprot,          //            .arprot
+		input  wire [3:0]   s2_axi4_arqos,           //            .arqos
+		input  wire         s2_axi4_arvalid,         //            .arvalid
+		output wire         s2_axi4_arready,         //            .arready
+		output wire [3:0]   s2_axi4_rid,             //            .rid
+		output wire [255:0] s2_axi4_rdata,           //            .rdata
+		output wire [1:0]   s2_axi4_rresp,           //            .rresp
+		output wire         s2_axi4_rlast,           //            .rlast
+		output wire         s2_axi4_rvalid,          //            .rvalid
+		input  wire         s2_axi4_rready,          //            .rready
+		input  wire         clk_sys_clk,             //     clk_sys.clk
+		input  wire         core_init_n_reset_n,     // core_init_n.reset_n
+		output wire         ctrl_ready_reset_n,      //  ctrl_ready.reset_n
+		input  wire [26:0]  s0_axi4lite_awaddr,      // s0_axi4lite.awaddr
+		input  wire [2:0]   s0_axi4lite_awprot,      //            .awprot
+		input  wire         s0_axi4lite_awvalid,     //            .awvalid
+		output wire         s0_axi4lite_awready,     //            .awready
+		input  wire [26:0]  s0_axi4lite_araddr,      //            .araddr
+		input  wire [2:0]   s0_axi4lite_arprot,      //            .arprot
+		input  wire         s0_axi4lite_arvalid,     //            .arvalid
+		output wire         s0_axi4lite_arready,     //            .arready
+		input  wire [31:0]  s0_axi4lite_wdata,       //            .wdata
+		input  wire [3:0]   s0_axi4lite_wstrb,       //            .wstrb
+		input  wire         s0_axi4lite_wvalid,      //            .wvalid
+		output wire         s0_axi4lite_wready,      //            .wready
+		input  wire         s0_axi4lite_bready,      //            .bready
+		output wire [1:0]   s0_axi4lite_bresp,       //            .bresp
+		output wire         s0_axi4lite_bvalid,      //            .bvalid
+		input  wire         s0_axi4lite_rready,      //            .rready
+		output wire [31:0]  s0_axi4lite_rdata,       //            .rdata
+		output wire [1:0]   s0_axi4lite_rresp,       //            .rresp
+		output wire         s0_axi4lite_rvalid,      //            .rvalid
+		output wire [0:0]   mem_0_mem_cs,            //       mem_0.mem_cs
+		output wire [5:0]   mem_0_mem_ca,            //            .mem_ca
+		output wire [0:0]   mem_0_mem_cke,           //            .mem_cke
+		inout  wire [31:0]  mem_0_mem_dq,            //            .mem_dq
+		inout  wire [3:0]   mem_0_mem_dqs_t,         //            .mem_dqs_t
+		inout  wire [3:0]   mem_0_mem_dqs_c,         //            .mem_dqs_c
+		inout  wire [3:0]   mem_0_mem_dmi,           //            .mem_dmi
+		output wire [0:0]   mem_ck_0_mem_ck_t,       //    mem_ck_0.mem_ck_t
+		output wire [0:0]   mem_ck_0_mem_ck_c,       //            .mem_ck_c
+		output wire         mem_reset_n_mem_reset_n, // mem_reset_n.mem_reset_n
+		input  wire         oct_0_oct_rzqin,         //       oct_0.oct_rzqin
+		input  wire         ref_clk_clk,             //     ref_clk.clk
+		input  wire         rst_sys_reset            //     rst_sys.reset
+	);
+
+   // =====================================================================
+   //  Behavioral simulation model -- NOT the real Intel EMIF.
+   //  Just enough to exercise the VRAM datapath end to end:
+   //    * AXI-Lite calibration CSR always reports "cal done"
+   //    * s0_axi4_reset_n (AXI-ready) deasserts a few cycles after
+   //      core_init_n is released
+   //    * s0_axi4 is a sparse AXI4 memory (INCR bursts honoured, wstrb
+   //      honoured), one outstanding read + one outstanding write.
+   //  Functionally correct, not cycle-accurate (depth-1, no reordering).
+   // =====================================================================
+
+   // Sparse backing store, indexed by 256-bit word address.
+   logic [255:0] mem [longint];
+
+   // ---------------------------------------------------------------------
+   // AXI-Lite calibration status register.
+   //   reads  -> 32'h1 (bit0 = cal success, bit1 = cal fail)
+   //   writes -> accepted and B-acked (the cal driver never writes, but
+   //             keep it deadlock-free in case something else does)
+   // ---------------------------------------------------------------------
+   logic        l_arready, l_rvalid;
+   logic        l_aw_seen, l_w_seen, l_bvalid;
+   always_ff @(posedge clk_sys_clk) begin
+      if (rst_sys_reset) begin
+         l_arready <= 1'b0;
+         l_rvalid  <= 1'b0;
+         l_aw_seen <= 1'b0;
+         l_w_seen  <= 1'b0;
+         l_bvalid  <= 1'b0;
+      end else begin
+         // read: single-beat handshake
+         l_arready <= s0_axi4lite_arvalid & ~l_arready & ~l_rvalid;
+         if (s0_axi4lite_arvalid & l_arready)    l_rvalid <= 1'b1;
+         else if (l_rvalid & s0_axi4lite_rready) l_rvalid <= 1'b0;
+         // write: latch AW/W, then B
+         if (s0_axi4lite_awvalid & s0_axi4lite_awready) l_aw_seen <= 1'b1;
+         if (s0_axi4lite_wvalid  & s0_axi4lite_wready)  l_w_seen  <= 1'b1;
+         if (l_aw_seen & l_w_seen & ~l_bvalid)          l_bvalid  <= 1'b1;
+         if (l_bvalid & s0_axi4lite_bready) begin
+            l_bvalid  <= 1'b0;
+            l_aw_seen <= 1'b0;
+            l_w_seen  <= 1'b0;
+         end
+      end
+   end
+   assign s0_axi4lite_arready = l_arready;
+   assign s0_axi4lite_rvalid  = l_rvalid;
+   assign s0_axi4lite_rdata   = 32'h0000_0001; // bit0 = cal done, bit1 = cal fail
+   assign s0_axi4lite_rresp   = 2'b00;
+   assign s0_axi4lite_awready = ~rst_sys_reset & ~l_aw_seen;
+   assign s0_axi4lite_wready  = ~rst_sys_reset & ~l_w_seen;
+   assign s0_axi4lite_bvalid  = l_bvalid;
+   assign s0_axi4lite_bresp   = 2'b00;
+
+   // ---------------------------------------------------------------------
+   // AXI4 domain reset: go "ready" a few cycles after core_init_n release.
+   // ---------------------------------------------------------------------
+   logic [3:0] rdy_cnt = 4'h0;
+   logic       axi_rdy = 1'b0;
+   always_ff @(posedge clk_sys_clk) begin
+      if (!core_init_n_reset_n) begin
+         rdy_cnt <= 4'h0;
+         axi_rdy <= 1'b0;
+      end else if (!axi_rdy) begin
+         rdy_cnt <= rdy_cnt + 4'h1;
+         if (&rdy_cnt) axi_rdy <= 1'b1;
+      end
+   end
+   assign ctrl_ready_reset_n = axi_rdy;
+
+`ifdef FIXME
+   // ---------------------------------------------------------------------
+   // AXI4 read channel (single outstanding, INCR).
+   // ---------------------------------------------------------------------
+   logic         rd_busy;
+   logic [6:0]   rd_id;
+   longint       rd_addr;   // byte address
+   logic [7:0]   rd_left;   // beats remaining (incl. current)
+   logic [2:0]   rd_size;
+   logic [255:0] rd_data_c;
+
+   always_comb begin
+      if (mem.exists(rd_addr >> 5)) rd_data_c = mem[rd_addr >> 5];
+      else                          rd_data_c = 256'd0;
+   end
+
+   always_ff @(posedge clk_sys_clk) begin
+      if (!axi_rdy) begin
+         rd_busy <= 1'b0;
+      end else if (!rd_busy) begin
+         if (s0_axi4_arvalid) begin
+            rd_busy <= 1'b1;
+            rd_id   <= s0_axi4_arid;
+            rd_addr <= longint'(s0_axi4_araddr);
+            rd_left <= s0_axi4_arlen + 8'd1;
+            rd_size <= s0_axi4_arsize;
+         end
+      end else if (s0_axi4_rready) begin
+         rd_addr <= rd_addr + (longint'(1) << rd_size);
+         rd_left <= rd_left - 8'd1;
+         if (rd_left == 8'd1) rd_busy <= 1'b0;
+      end
+   end
+   assign s0_axi4_arready = axi_rdy & ~rd_busy;
+   assign s0_axi4_rvalid  = rd_busy;
+   assign s0_axi4_rdata   = rd_data_c;
+   assign s0_axi4_rlast   = (rd_left == 8'd1);
+   assign s0_axi4_rid     = rd_id;
+   assign s0_axi4_rresp   = 2'b00;
+
+   // ---------------------------------------------------------------------
+   // AXI4 write channel (single outstanding, INCR + byte strobes).
+   // ---------------------------------------------------------------------
+   localparam logic [1:0] WS_AW = 2'd0, WS_W = 2'd1, WS_B = 2'd2;
+   logic [1:0]  wr_state;
+   logic [6:0]  wr_id;
+   longint      wr_addr;
+   logic [2:0]  wr_size;
+
+   always_ff @(posedge clk_sys_clk) begin
+      if (!axi_rdy) begin
+         wr_state <= WS_AW;
+      end else begin
+         case (wr_state)
+           WS_AW:
+              if (s0_axi4_awvalid) begin
+                 wr_id    <= s0_axi4_awid;
+                 wr_addr  <= longint'(s0_axi4_awaddr);
+                 wr_size  <= s0_axi4_awsize;
+                 wr_state <= WS_W;
+              end
+           WS_W:
+              if (s0_axi4_wvalid) begin
+                 logic [255:0] cur;
+                 cur = mem.exists(wr_addr >> 5) ? mem[wr_addr >> 5] : 256'd0;
+                 for (int b = 0; b < 32; b++)
+                    if (s0_axi4_wstrb[b])
+                       cur[b*8 +: 8] = s0_axi4_wdata[b*8 +: 8];
+                 mem[wr_addr >> 5] = cur;
+                 wr_addr <= wr_addr + (longint'(1) << wr_size);
+                 if (s0_axi4_wlast) wr_state <= WS_B;
+              end
+           WS_B:
+              if (s0_axi4_bready) wr_state <= WS_AW;
+           default: wr_state <= WS_AW;
+         endcase
+      end
+   end
+   assign s0_axi4_awready = axi_rdy & (wr_state == WS_AW);
+   assign s0_axi4_wready  = axi_rdy & (wr_state == WS_W);
+   assign s0_axi4_bvalid  = (wr_state == WS_B);
+   assign s0_axi4_bid     = wr_id;
+   assign s0_axi4_bresp   = 2'b00;
+`endif
+
+   // Unused physical DRAM interface (no DRAM model attached in sim).
+   assign mem_0_mem_cs      = '0;
+   assign mem_0_mem_ca      = '0;
+   assign mem_0_mem_cke     = '0;
+   assign mem_ck_0_mem_ck_t = '0;
+   assign mem_ck_0_mem_ck_c = '0;
+   assign mem_0_mem_dq      = 'z;
+   assign mem_0_mem_dqs_t   = 'z;
+   assign mem_0_mem_dqs_c   = 'z;
+   assign mem_0_mem_dmi     = 'z;
+   assign mem_reset_n_mem_reset_n = 1'b0;
+
+endmodule // lpddr4b_vram

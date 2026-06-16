@@ -37,7 +37,7 @@ source scripts/misc_pin_assignments.tcl
 #source scripts/gpio_pin_assignments.tcl
 #source scripts/sdram_pin_assignments.tcl
 source scripts/lpddr4a_pin_assignments.tcl
-#source scripts/lpddr4b_pin_assignments.tcl
+source scripts/lpddr4b_pin_assignments.tcl
 source scripts/hdmi_pin_assignments.tcl
 #source scripts/cam_pin_assignments.tcl
 #source scripts/hps_pin_assignments.tcl
@@ -49,7 +49,15 @@ set_global_assignment -name IP_FILE ip/core_pll.ip
 set_global_assignment -name IP_FILE ip/hdmi_pll.ip
 set_global_assignment -name IP_FILE ip/agilex_hps.ip
 set_global_assignment -name IP_FILE ip/emif_io96b_hps.ip
-#set_global_assignment -name IP_FILE ip/ace5_translate.ip
+set_global_assignment -name IP_FILE ip/emif_io96b_fpga.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_axi_bridge_0.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_axi_bridge_1.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_axi_bridge_2.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_axi_bridge_3.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_axi_bridge_4.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_clock_in.ip
+set_global_assignment -name IP_FILE ip/lpddr4b_vram_reset_in.ip
+set_global_assignment -name QSYS_FILE ip/lpddr4b_vram.qsys
 
 # Add our RTL
 #============================================================
@@ -57,7 +65,7 @@ set_global_assignment -name IP_FILE ip/emif_io96b_hps.ip
 set_global_assignment -name VERILOG_MACRO "VENDOR_ALTERA=1"
 #set_global_assignment -name VERILOG_MACRO "ENABLE_FPGA2HPS=1"
 set_global_assignment -name VERILOG_MACRO "ENABLE_FPGA2SDRAM=1"
-#set_global_assignment -name VERILOG_MACRO "ENABLE_HPS2FPGA=1"
+set_global_assignment -name VERILOG_MACRO "ENABLE_HPS2FPGA=1"
 
 # Common library files
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/bram_pkg.sv
@@ -67,9 +75,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/synchronizer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/areset_synchronizer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/signal_filter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/cdc_tgl.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/scfifo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/common/rtl/sfifo.sv
 
-# Video controller
+# Video controller core
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_pkg.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_timing.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_regs.sv
@@ -79,6 +87,14 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_cproc.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_fbuff.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_axim.sv
+
+# Video controller DMA
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_dma_regs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_dma_rd.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_dma_wr.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_dma_blend.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_dma_realign.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../sub/vctrl/rtl/vctrl_dma.sv
 
 # HDMI PLL reconfiguration FSM
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hdmi_pll_recfg.sv
@@ -95,6 +111,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hdmi_output.sv
 # Top-level wrappers
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/hps_wrapper.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/lw_ctrl_bridge.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/axil_driver_calibration.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/vctrl_wrapper.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../rtl/de25_nano_top.sv
 
