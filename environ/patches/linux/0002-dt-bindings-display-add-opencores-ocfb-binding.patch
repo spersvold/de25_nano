@@ -1,4 +1,4 @@
-From ec8941fd8da10ac2e687cfd92bce5366e0fee1d1 Mon Sep 17 00:00:00 2001
+From f7ae98c4d4dd437bdbf0700460e834de34f01d88 Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
 Subject: [PATCH 2/5] dt-bindings: display: add opencores,ocfb binding
@@ -13,16 +13,16 @@ binding is not tied to any one PLL macro.
 
 Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
- .../bindings/display/opencores,ocfb.yaml      | 168 ++++++++++++++++++
- 1 file changed, 168 insertions(+)
+ .../bindings/display/opencores,ocfb.yaml      | 173 ++++++++++++++++++
+ 1 file changed, 173 insertions(+)
  create mode 100644 Documentation/devicetree/bindings/display/opencores,ocfb.yaml
 
 diff --git a/Documentation/devicetree/bindings/display/opencores,ocfb.yaml b/Documentation/devicetree/bindings/display/opencores,ocfb.yaml
 new file mode 100644
-index 00000000..9011a92d
+index 00000000..caec25f1
 --- /dev/null
 +++ b/Documentation/devicetree/bindings/display/opencores,ocfb.yaml
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,173 @@
 +# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 +%YAML 1.2
 +---
@@ -46,8 +46,20 @@ index 00000000..9011a92d
 +    const: opencores,ocfb
 +
 +  reg:
-+    maxItems: 1
-+    description: control and status registers
++    minItems: 1
++    items:
++      - description: control and status registers
++      - description: >
++          Framebuffer aperture: the device-local VRAM the scanout master reads
++          from (e.g. FPGA-local SDRAM), exposed to the CPU as a write-combining
++          window. Scanout buffers are allocated within it. Required by the
++          driver, which has no host-memory fallback.
++
++  reg-names:
++    minItems: 1
++    items:
++      - const: regs
++      - const: vram
 +
 +  interrupts:
 +    maxItems: 1
@@ -62,22 +74,14 @@ index 00000000..9011a92d
 +      Reference clock (fIN) for the pixel-clock PLL. Required when
 +      opencores,programmable-pixclk is present.
 +
-+  memory-region:
-+    maxItems: 1
-+    description: >
-+      Reserved memory region (a "shared-dma-pool") the scanout buffers are
-+      allocated from. If absent the driver allocates them from the system
-+      DMA allocator instead.
-+
 +  opencores,vbar-offset:
 +    $ref: /schemas/types.yaml#/definitions/uint32
 +    description: >
-+      Offset, in bytes, subtracted from a scanout buffer's DMA (CPU-physical)
-+      address before it is written to the video base address register (VBAR).
-+      Use it when the scanout read master reaches DRAM through a window that is
-+      not 1:1 with the CPU physical address map -- for example the FPGA-to-SDRAM
-+      bridge, whose addresses are relative to the start of DRAM. Defaults to 0
-+      (the master's address space matches CPU physical).
++      Offset, in bytes, subtracted from a scanout buffer's VRAM-relative offset
++      before it is written to the video base address register (VBAR). Use it
++      when the scanout read master's view of the framebuffer aperture is not
++      0-based. Defaults to 0 (VBAR is the buffer's offset within the VRAM
++      aperture).
 +
 +  big-endian:
 +    type: boolean
@@ -179,7 +183,8 @@ index 00000000..9011a92d
 +  - |
 +    framebuffer@20000000 {
 +        compatible = "opencores,ocfb";
-+        reg = <0x20000000 0x1000>;
++        reg = <0x20000000 0x1000>, <0x40000000 0x40000000>;
++        reg-names = "regs", "vram";
 +        clocks = <&pll_refclk>;
 +        opencores,has-pitch;
 +        opencores,has-doublescan;
