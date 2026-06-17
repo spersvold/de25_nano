@@ -1,7 +1,7 @@
-From 7ee57cd9ecd678b180ba39b0f2ccbe331522d6b3 Mon Sep 17 00:00:00 2001
+From c57110429ad6505d20ceeb624d5ba4c6093a461f Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
-Subject: [PATCH 5/5] arm64: dts: socfpga: agilex5: de25-nano: add ocfb video
+Subject: [PATCH] arm64: dts: socfpga: agilex5: de25-nano: add ocfb video
  controller
 
 Wire up the FPGA video controller (opencores,ocfb -- the vctrl RTL block)
@@ -11,16 +11,27 @@ no-map shared-dma-pool the DRM driver allocates scanout buffers from
 HVIO IOPLL operating bands and M/N/C counter ranges, and the 165 MHz
 output ceiling.
 
+Enable copy-on-flip into FPGA-local VRAM: the 1 GiB VRAM aperture at
+0x4000_0000 (reg "vram") and the vctrl_dma command engine (reg "dma" at
+0x2000_1000) alongside the CSR window. The host framebuffer pool stays in
+the shared-dma-pool; the engine copies each flip into two scanout buffers
+carved from the base of the VRAM aperture and scanout reads from there.
+opencores,vram-base is 0 (the VRAM crossbar port is zero-based). Both
+interrupts are declared -- vsync (fpga2hps_interrupt_irq0[0] -> GIC SPI 17)
+and the vctrl_dma done interrupt (fpga2hps_interrupt_irq0[1] -> GIC SPI 18)
+-- so the driver completes flips asynchronously from the DMA-done interrupt;
+dropping the second interrupt falls back to synchronous polled flips.
+
 Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
- .../dts/intel/socfpga_agilex5_de25_nano.dts   | 93 +++++++++++++++++++
- 1 file changed, 93 insertions(+)
+ .../dts/intel/socfpga_agilex5_de25_nano.dts   | 122 ++++++++++++++++++
+ 1 file changed, 122 insertions(+)
 
 diff --git a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
-index e1acbfc7..ab931cb4 100644
+index e1acbfc7..a6e4947b 100644
 --- a/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
 +++ b/arch/arm64/boot/dts/intel/socfpga_agilex5_de25_nano.dts
-@@ -38,6 +38,99 @@ memory {
+@@ -38,6 +38,128 @@ memory {
  	};
  };
  
@@ -73,24 +84,53 @@ index e1acbfc7..ab931cb4 100644
 +	 * reached through the lightweight HPS->FPGA bridge (lwh2f base
 +	 * 0x2000_0000, CSR block at offset 0 per lw_ctrl_bridge.sv).
 +	 *
-+	 * reg[0] = 4 KiB CSR window. The scanout buffer comes from the
-+	 * fb_reserved dma-pool referenced by memory-region: the ocfb DRM driver
-+	 * allocates a GEM-DMA buffer there and programs its physical base into the
-+	 * VBAR register (0x14), which feeds vctrl_axim's FPGA->HPS reads.
++	 * Copy-on-flip: userspace renders into GEM-DMA framebuffers in host DRAM
++	 * (the fb_reserved pool); on every flip the vctrl_dma command engine
++	 * copies the framebuffer into one of two private scanout buffers in
++	 * FPGA-local LPDDR4 VRAM, and the scanout master reads from VRAM -- so
++	 * scanout reads never contend on the host-DRAM channel.
++	 *
++	 *   reg[0] "csr"  = 4 KiB vctrl CSR window (lwh2f offset 0).
++	 *   reg[1] "vram" = VRAM aperture: the host-visible h2f window onto the
++	 *                   FPGA-local DRAM the engine copies into. 1 GiB at
++	 *                   0x4000_0000. The driver carves two scanout buffers out
++	 *                   of the base of it (sized for the largest mode) and
++	 *                   points VBAR at them via opencores,vram-base; the rest
++	 *                   is spare.
++	 *   reg[2] "dma"  = vctrl_dma command CSRs (lwh2f offset 0x1000).
++	 *
++	 * The scanout read and DMA-write masters address VRAM zero-based (the VRAM
++	 * crossbar port is zero-based), so opencores,vram-base is 0.
 +	 */
 +	framebuffer0: framebuffer@20000000 {
 +		compatible = "opencores,ocfb";
-+		reg = <0x20000000 0x1000>;
-+		/* vctrl vsync -> fpga2hps_interrupt_irq0[0] -> GIC SPI 17 */
-+		interrupts = <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>;
++		reg = <0x20000000 0x00001000>,	/* csr  */
++		      <0x40000000 0x40000000>,	/* vram = 1 GiB FPGA-local DRAM */
++		      <0x20001000 0x00001000>;	/* dma  */
++		reg-names = "csr", "vram", "dma";
++		/*
++		 * [0] vctrl vsync    -> fpga2hps_interrupt_irq0[0] -> GIC SPI 17
++		 * [1] vctrl_dma done -> fpga2hps_interrupt_irq0[1] -> GIC SPI 18
++		 * (irq0[N] = SPI 17+N). With the DMA-done interrupt present the driver
++		 * completes flips from it (asynchronous); drop the second entry to fall
++		 * back to polling the fence (synchronous).
++		 */
++		interrupts = <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SPI 18 IRQ_TYPE_LEVEL_HIGH>;
 +		memory-region = <&fb_reserved>;
 +		/*
-+		 * VBAR holds the scanout base in the FPGA-to-SDRAM master's address
-+		 * space:  VBAR = dma_addr - vbar-offset, with
-+		 * offset = (MPU DRAM base) - (f2sdram window base). The f2sdram master
-+		 * reaches DRAM through the sdram_2G window, based at 0x8000_0000 -- the
-+		 * same base the MPU sees -- so it is 1:1 and the offset is 0. (Set it
-+		 * to 0x8000_0000 only if the f2sdram window is DRAM-relative/0-based.)
++		 * FPGA-side base of the VRAM aperture as seen by the scanout read
++		 * master (VBAR) and the DMA write master (copy destination). The VRAM
++		 * crossbar port is zero-based, so this is 0.
++		 */
++		opencores,vram-base = <0>;
++		/*
++		 * Translates a host buffer's CPU-physical DMA address into the read
++		 * master's address space: src = dma_addr - vbar-offset. The vctrl_dma
++		 * read master reaches host DRAM through the FPGA-to-SDRAM bridge's
++		 * sdram_2G window, based at 0x8000_0000 -- the same base the MPU sees
++		 * -- so it is 1:1 and the offset is 0. (For direct scanout, without the
++		 * DMA engine, the same offset translates the VBAR scanout base.)
 +		 */
 +		opencores,vbar-offset = <0>;
 +		/* this vctrl implements the optional 0x20 pitch register and

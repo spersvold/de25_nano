@@ -1,8 +1,8 @@
-From 9bc8157f83a36a73e27e70a8127edc036154b4ab Mon Sep 17 00:00:00 2001
+From 1dcf7779a4eadd3bdf7e8054a705b303004bacbf Mon Sep 17 00:00:00 2001
 From: Steffen Persvold <spersvold@gmail.com>
 Date: Sun, 14 Jun 2026 11:37:25 +0200
-Subject: [PATCH 1/5] drm/tiny: add ocfb DRM/KMS driver for the OpenCores
- VGA/LCD core
+Subject: [PATCH] drm/tiny: add ocfb DRM/KMS driver for the OpenCores VGA/LCD
+ core
 
 Add a DRM/KMS driver for the OpenCores VGA/LCD 2.0 core (ocfb) and
 register-compatible derivatives, with optional support for a line-pitch
@@ -15,6 +15,20 @@ mode set (M/N/C solver, max-pixclk-hz ceiling in mode_valid), and selects
 register byte order from the generic "big-endian" DT property. Bound via
 the "opencores,ocfb" compatible.
 
+Optionally, when the device tree provides a companion DMA command engine
+(reg index 2) and a VRAM aperture (reg index 1), the driver runs in
+"copy-on-flip" mode: userspace renders into host-memory framebuffers as
+usual, and each page flip DMA-copies the framebuffer into one of two
+private scanout buffers in device-local VRAM, pointing the scanout master
+there. This keeps scanout reads off the contended host-memory channel. The
+copy is waited on synchronously in the commit tail, or, when a DMA-done
+interrupt is wired (interrupt index 1), completed from that interrupt
+instead -- mirroring how the vsync interrupt selects vblank behaviour.
+Because the displayed image is a snapshot taken at the copy, framebuffers
+carry a
+dirty/damage callback so in-place rendering -- the fbcon console in
+particular -- triggers a copy too, not just page flips.
+
 Make it mutually exclusive with the fbdev driver in Kconfig
 (FB_OPENCORES depends on !DRM_OCFB), mirroring FB_SIMPLE/DRM_SIMPLEDRM.
 
@@ -23,11 +37,11 @@ its fbdev driver (drivers/video/fbdev/ocfb.c) by Stefan Kristiansson.
 
 Signed-off-by: Steffen Persvold <spersvold@gmail.com>
 ---
- drivers/gpu/drm/tiny/Kconfig    |  16 +
- drivers/gpu/drm/tiny/Makefile   |   1 +
- drivers/gpu/drm/tiny/ocfb-drm.c | 808 ++++++++++++++++++++++++++++++++
- drivers/video/fbdev/Kconfig     |   3 +
- 4 files changed, 828 insertions(+)
+ drivers/gpu/drm/tiny/Kconfig    |   16 +
+ drivers/gpu/drm/tiny/Makefile   |    1 +
+ drivers/gpu/drm/tiny/ocfb-drm.c | 1232 +++++++++++++++++++++++++++++++
+ drivers/video/fbdev/Kconfig     |    3 +
+ 4 files changed, 1252 insertions(+)
  create mode 100644 drivers/gpu/drm/tiny/ocfb-drm.c
 
 diff --git a/drivers/gpu/drm/tiny/Kconfig b/drivers/gpu/drm/tiny/Kconfig
@@ -71,10 +85,10 @@ index 48d30bf6..06e9f104 100644
  obj-$(CONFIG_TINYDRM_HX8357D)		+= hx8357d.o
 diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
 new file mode 100644
-index 00000000..30e83a18
+index 00000000..f82d7c41
 --- /dev/null
 +++ b/drivers/gpu/drm/tiny/ocfb-drm.c
-@@ -0,0 +1,808 @@
+@@ -0,0 +1,1232 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * DRM/KMS driver for the OpenCores VGA/LCD 2.0 core (ocfb) and register-
@@ -92,6 +106,16 @@ index 00000000..30e83a18
 + * onto drm_simple_display_pipe + GEM-DMA, with fbdev emulation bringing the
 + * console back.
 + *
++ * An optional companion DMA command engine enables "copy-on-flip": userspace
++ * renders into host-memory framebuffers as usual, and on each flip -- or on
++ * framebuffer damage, so in-place rendering like the fbcon console works too --
++ * the engine copies the framebuffer into one of two private scanout buffers in
++ * device-local VRAM, where the scanout master then reads it. This keeps scanout
++ * reads off the contended host-memory channel. It is enabled when the device
++ * tree provides the DMA CSRs (reg[2]) and a VRAM aperture (reg[1]); the copy is
++ * waited on synchronously in the commit tail, or, when a DMA-done interrupt is
++ * wired, completed from that interrupt instead.
++ *
 + * Copyright (C) 2013 Stefan Kristiansson (original fbdev driver)
 + * Copyright (C) 2026 Steffen Persvold <spersvold@gmail.com> (DRM port)
 + */
@@ -106,6 +130,7 @@ index 00000000..30e83a18
 +#include <linux/of.h>
 +#include <linux/of_reserved_mem.h>
 +#include <linux/platform_device.h>
++#include <linux/sizes.h>
 +
 +#include <drm/clients/drm_client_setup.h>
 +#include <drm/drm_atomic_helper.h>
@@ -168,6 +193,46 @@ index 00000000..30e83a18
 +/* accept a solved pixel clock within this many ppm of the request */
 +#define OCFB_PLL_TOL_PPM	10000
 +
++/*
++ * Optional companion DMA command engine CSRs (reg[2]) -- it copies a host
++ * framebuffer into device-local VRAM. These mirror the engine's hardware
++ * register interface. Only the PIO descriptor path is used (program the
++ * descriptor, then ring the doorbell); the in-memory command ring is left for
++ * a later phase.
++ */
++#define OCFB_DMA_ID		0x00	/* RO   identification */
++#define OCFB_DMA_CTRL		0x04	/* RW   enable / soft-reset */
++#define OCFB_DMA_STATUS		0x08	/* RO   busy / idle / error */
++#define OCFB_DMA_IRQ		0x0c	/* RW1C interrupt status */
++#define OCFB_DMA_IRQEN		0x10	/* RW   interrupt mask */
++#define OCFB_DMA_SRC		0x20	/* RW   source byte address */
++#define OCFB_DMA_DST		0x24	/* RW   destination byte address */
++#define OCFB_DMA_SRCPITCH	0x28	/* RW   source row stride (bytes) */
++#define OCFB_DMA_DSTPITCH	0x2c	/* RW   dest row stride (bytes) */
++#define OCFB_DMA_WIDTH		0x30	/* RW   bytes per row */
++#define OCFB_DMA_HEIGHT		0x34	/* RW   rows (1 => linear copy) */
++#define OCFB_DMA_OP		0x38	/* RW   [7:0] opcode, [15:8] flags */
++#define OCFB_DMA_DOORBELL	0x3c	/* WO   write seqno -> execute descriptor */
++#define OCFB_DMA_FENCE		0x40	/* RO   last completed seqno */
++#define OCFB_DMA_ERR		0x44	/* RO   error info (resp / fault) */
++
++#define OCFB_DMA_IDENT		0x76430100 /* "vc" + version 1.0 */
++
++#define OCFB_DMA_CTRL_ENABLE	0x00000001
++#define OCFB_DMA_CTRL_RESET	0x00000002 /* soft reset, self-clearing */
++
++#define OCFB_DMA_STAT_BUSY	0x00000001 /* a command is executing */
++#define OCFB_DMA_STAT_IDLE	0x00000002 /* idle, no in-flight beats */
++#define OCFB_DMA_STAT_ERROR	0x00000004 /* sticky error (see DMA_ERR) */
++
++#define OCFB_DMA_IRQ_DONE	0x00000001 /* command completed (fence advanced) */
++#define OCFB_DMA_IRQ_ERROR	0x00000002 /* command faulted */
++
++#define OCFB_DMA_OP_COPY2D	0x01	/* 2D strided copy (height 1 => linear) */
++
++/* bound the wait for a copy to complete (a full 1080p frame is a few ms) */
++#define OCFB_DMA_TIMEOUT_US	100000
++
 +struct ocfb_drm {
 +	struct drm_device drm;
 +	void __iomem *regs;
@@ -187,6 +252,26 @@ index 00000000..30e83a18
 +	int irq;			/* vsync IRQ for vblank; <= 0 if not wired */
 +	u32 ctrl;			/* live CTRL word, VIE masked (set in enable) */
 +	u32 vbar_offset;		/* subtracted from the DMA addr written to VBAR */
++	/*
++	 * Copy-on-flip into device-local VRAM. When the DMA command engine
++	 * (reg[2]) and a VRAM aperture (reg[1]) are both present, every flip
++	 * DMA-copies the host framebuffer into one of two private VRAM scanout
++	 * buffers and points the scanout master (VBAR) at VRAM rather than host
++	 * memory -- isolating scanout reads on the device-local memory channel.
++	 */
++	bool copy_on_flip;
++	void __iomem *dma_regs;		/* reg[2]: DMA command engine CSRs */
++	void __iomem *vram;		/* reg[1]: VRAM aperture (WC), cleared at probe */
++	int dma_irq;			/* DMA-done IRQ; <= 0 if not wired */
++	u32 vram_base;			/* scanout/DMA-master address of VRAM offset 0 */
++	u32 vram_slot;			/* per-buffer stride within VRAM (bytes) */
++	unsigned int vram_cur;		/* VRAM buffer currently scanned out (0/1) */
++	u32 dma_seqno;			/* monotonic DMA fence seqno */
++	/* async flip hand-off: pipe_update arms it, the DMA-done IRQ resolves it */
++	struct drm_pending_vblank_event *flip_event;
++	unsigned int flip_slot;
++	u32 flip_bytes;
++	bool flip_pending;
 +	struct drm_simple_display_pipe pipe;
 +	struct drm_connector connector;
 +};
@@ -206,6 +291,21 @@ index 00000000..30e83a18
 +		iowrite32be(val, ocfb->regs + off);
 +	else
 +		iowrite32(val, ocfb->regs + off);
++}
++
++/* The DMA command CSRs share the register bus byte order with the core. */
++static inline u32 ocfb_dma_rd(struct ocfb_drm *ocfb, u32 off)
++{
++	return ocfb->big_endian ? ioread32be(ocfb->dma_regs + off)
++				: ioread32(ocfb->dma_regs + off);
++}
++
++static inline void ocfb_dma_wr(struct ocfb_drm *ocfb, u32 off, u32 val)
++{
++	if (ocfb->big_endian)
++		iowrite32be(val, ocfb->dma_regs + off);
++	else
++		iowrite32(val, ocfb->dma_regs + off);
 +}
 +
 +/*
@@ -508,9 +608,10 @@ index 00000000..30e83a18
 +	/*
 +	 * VBAR holds the scanout base in the read master's address space. When
 +	 * that master reaches DRAM through a window that is not 1:1 with the CPU
-+	 * physical map -- e.g. the FPGA-to-SDRAM bridge, whose addresses are
-+	 * DRAM-relative -- vbar-offset translates the buffer's DMA (CPU-physical)
-+	 * address into it. Zero (the default) leaves the address unchanged.
++	 * physical map -- e.g. an address window whose addresses are relative to
++	 * the start of DRAM -- vbar-offset translates the buffer's DMA (CPU-
++	 * physical) address into it. Zero (the default) leaves the address
++	 * unchanged.
 +	 */
 +	ocfb_wr(ocfb, OCFB_VBARA,
 +		lower_32_bits(gem->dma_addr - ocfb->vbar_offset));
@@ -522,6 +623,141 @@ index 00000000..30e83a18
 +	 * map too. gem->base.size is the page-rounded allocation == mapped extent.
 +	 */
 +	ocfb_wr(ocfb, OCFB_VSIZ, gem->base.size);
++}
++
++/*
++ * Submit a linear host->VRAM copy of @fb into VRAM scanout slot @slot through
++ * the DMA command engine, tagged with a fresh fence seqno (returned). The host
++ * buffer's CPU-physical DMA address is translated into the read master's space
++ * by vbar-offset (for a bus window that is not 1:1 with CPU-physical) exactly as
++ * the direct-scanout VBAR is. The whole framebuffer is copied as one linear run
++ * (height 1); the source
++ * and destination share the framebuffer's pitch, so the VRAM copy is byte-
++ * identical and the scanout PITCH/timing programming is unchanged.
++ */
++static u32 ocfb_dma_submit(struct ocfb_drm *ocfb, struct drm_framebuffer *fb,
++			   unsigned int slot)
++{
++	struct drm_gem_dma_object *gem = drm_fb_dma_get_gem_obj(fb, 0);
++	u32 src = lower_32_bits(gem->dma_addr - ocfb->vbar_offset);
++	u32 dst = ocfb->vram_base + slot * ocfb->vram_slot;
++	u32 bytes = fb->pitches[0] * fb->height;
++	u32 seqno = ++ocfb->dma_seqno;
++	u32 st;
++
++	/*
++	 * The doorbell is a one-shot pulse the engine only latches while idle, so
++	 * one rung while a previous command is still in flight is silently dropped
++	 * and its fence never advances. Atomic commits are serialised per-CRTC,
++	 * but a modeset's initial copy can race an async flip from the outgoing
++	 * client that is still settling (an fbcon deferred-I/O flush, or the
++	 * previous DRM master), so wait for idle before kicking.
++	 */
++	if (read_poll_timeout(ocfb_dma_rd, st, st & OCFB_DMA_STAT_IDLE, 10,
++			      OCFB_DMA_TIMEOUT_US, false, ocfb, OCFB_DMA_STATUS))
++		dev_warn(ocfb->drm.dev, "DMA not idle before submit (status=0x%08x)\n",
++			 st);
++
++	ocfb_dma_wr(ocfb, OCFB_DMA_SRC, src);
++	ocfb_dma_wr(ocfb, OCFB_DMA_DST, dst);
++	ocfb_dma_wr(ocfb, OCFB_DMA_SRCPITCH, bytes);
++	ocfb_dma_wr(ocfb, OCFB_DMA_DSTPITCH, bytes);
++	ocfb_dma_wr(ocfb, OCFB_DMA_WIDTH, bytes);
++	ocfb_dma_wr(ocfb, OCFB_DMA_HEIGHT, 1);
++	ocfb_dma_wr(ocfb, OCFB_DMA_OP, OCFB_DMA_OP_COPY2D);
++	ocfb_dma_wr(ocfb, OCFB_DMA_DOORBELL, seqno);	/* kick */
++
++	return seqno;
++}
++
++/*
++ * Point the scanout master at VRAM slot @slot and bound its prefetch to the
++ * @bytes just copied there (VSIZ; the hardware bounds its read-ahead to this).
++ */
++static void ocfb_vram_latch(struct ocfb_drm *ocfb, unsigned int slot, u32 bytes)
++{
++	ocfb_wr(ocfb, OCFB_VBARA, ocfb->vram_base + slot * ocfb->vram_slot);
++	ocfb_wr(ocfb, OCFB_VSIZ, bytes);
++	ocfb->vram_cur = slot;
++}
++
++/* Block until the DMA fence reaches @seqno (synchronous flip path). */
++static int ocfb_dma_wait(struct ocfb_drm *ocfb, u32 seqno)
++{
++	struct device *dev = ocfb->drm.dev;
++	u32 val;
++
++	if (read_poll_timeout(ocfb_dma_rd, val, val == seqno, 20,
++			      OCFB_DMA_TIMEOUT_US, false, ocfb, OCFB_DMA_FENCE)) {
++		dev_err(dev, "DMA copy timed out (fence=%u want=%u status=0x%08x err=0x%08x)\n",
++			val, seqno, ocfb_dma_rd(ocfb, OCFB_DMA_STATUS),
++			ocfb_dma_rd(ocfb, OCFB_DMA_ERR));
++		return -ETIMEDOUT;
++	}
++	if (ocfb_dma_rd(ocfb, OCFB_DMA_STATUS) & OCFB_DMA_STAT_ERROR) {
++		dev_err(dev, "DMA copy faulted (err=0x%08x)\n",
++			ocfb_dma_rd(ocfb, OCFB_DMA_ERR));
++		return -EIO;
++	}
++	return 0;
++}
++
++/*
++ * Synchronous flip: copy @fb into VRAM slot @slot, block on the fence, then
++ * latch the scanout there. Runs in the atomic commit tail (process context),
++ * so blocking while the engine works is fine.
++ */
++static int ocfb_vram_flip_sync(struct ocfb_drm *ocfb, struct drm_framebuffer *fb,
++			       unsigned int slot)
++{
++	u32 bytes = fb->pitches[0] * fb->height;
++	u32 seqno = ocfb_dma_submit(ocfb, fb, slot);
++	int ret = ocfb_dma_wait(ocfb, seqno);
++
++	if (ret)
++		return ret;
++
++	ocfb_vram_latch(ocfb, slot, bytes);
++	return 0;
++}
++
++/*
++ * DMA-done interrupt (asynchronous flip path only). Raised when a copy
++ * completes; latch the scanout base onto the buffer it filled and arm the
++ * page-flip event for the next start-of-frame, where the hardware samples VBAR
++ * and the vsync handler then delivers the event. On a faulted copy the scanout
++ * base is left unchanged (the previous frame keeps showing) but the event is
++ * still armed so userspace is not stranded.
++ */
++static irqreturn_t ocfb_dma_irq_handler(int irq, void *arg)
++{
++	struct ocfb_drm *ocfb = arg;
++	struct drm_crtc *crtc = &ocfb->pipe.crtc;
++	u32 stat = ocfb_dma_rd(ocfb, OCFB_DMA_IRQ);
++	unsigned long flags;
++
++	if (!(stat & (OCFB_DMA_IRQ_DONE | OCFB_DMA_IRQ_ERROR)))
++		return IRQ_NONE;
++
++	ocfb_dma_wr(ocfb, OCFB_DMA_IRQ, stat);		/* W1C */
++
++	spin_lock_irqsave(&crtc->dev->event_lock, flags);
++	if (ocfb->flip_pending) {
++		if (!(stat & OCFB_DMA_IRQ_ERROR))
++			ocfb_vram_latch(ocfb, ocfb->flip_slot, ocfb->flip_bytes);
++		if (ocfb->flip_event) {
++			drm_crtc_arm_vblank_event(crtc, ocfb->flip_event);
++			ocfb->flip_event = NULL;
++		}
++		ocfb->flip_pending = false;
++	}
++	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
++
++	if (stat & OCFB_DMA_IRQ_ERROR)
++		dev_err_ratelimited(ocfb->drm.dev, "DMA flip faulted (err=0x%08x)\n",
++				    ocfb_dma_rd(ocfb, OCFB_DMA_ERR));
++
++	return IRQ_HANDLED;
 +}
 +
 +/*
@@ -584,7 +820,17 @@ index 00000000..30e83a18
 +		ocfb_wr(ocfb, OCFB_PITCH, pitch);
 +	}
 +
-+	ocfb_set_scanout(ocfb, plane_state);
++	/*
++	 * Copy-on-flip: fill VRAM slot 0 and point the scanout there before
++	 * video is enabled, so the first frame is valid rather than stale VRAM.
++	 * Direct scanout just latches the host framebuffer base.
++	 */
++	if (ocfb->copy_on_flip) {
++		if (ocfb_vram_flip_sync(ocfb, fb, 0))
++			dev_err(ocfb->drm.dev, "initial flip copy failed\n");
++	} else {
++		ocfb_set_scanout(ocfb, plane_state);
++	}
 +
 +	ctrl = OCFB_CTRL_VEN | OCFB_CTRL_VBL8 |
 +	       ocfb_ctrl_color_depth(fb->format->format);
@@ -629,10 +875,34 @@ index 00000000..30e83a18
 +static void ocfb_pipe_disable(struct drm_simple_display_pipe *pipe)
 +{
 +	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++	struct drm_crtc *crtc = &pipe->crtc;
 +	u32 stat;
 +
++	/*
++	 * Copy-on-flip: let any in-flight copy finish (its IRQ then resolves the
++	 * flip the normal way), then reclaim a flip the IRQ never got to so the
++	 * stashed event and its vblank reference are not leaked.
++	 */
++	if (ocfb->copy_on_flip) {
++		if (read_poll_timeout(ocfb_dma_rd, stat, stat & OCFB_DMA_STAT_IDLE,
++				      50, OCFB_DMA_TIMEOUT_US, false, ocfb,
++				      OCFB_DMA_STATUS))
++			dev_warn(ocfb->drm.dev, "DMA did not drain on disable\n");
++
++		spin_lock_irq(&crtc->dev->event_lock);
++		if (ocfb->flip_pending) {
++			if (ocfb->flip_event) {
++				drm_crtc_send_vblank_event(crtc, ocfb->flip_event);
++				drm_crtc_vblank_put(crtc);
++				ocfb->flip_event = NULL;
++			}
++			ocfb->flip_pending = false;
++		}
++		spin_unlock_irq(&crtc->dev->event_lock);
++	}
++
 +	if (ocfb->irq > 0)
-+		drm_crtc_vblank_off(&pipe->crtc);
++		drm_crtc_vblank_off(crtc);
 +
 +	/* CTRL=0 clears VEN, which also gates the scanout read master. */
 +	ocfb_wr(ocfb, OCFB_CTRL, 0);
@@ -653,14 +923,51 @@ index 00000000..30e83a18
 +	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
 +	struct drm_crtc *crtc = &pipe->crtc;
 +	struct drm_pending_vblank_event *event = crtc->state->event;
++	struct drm_framebuffer *fb = pipe->plane.state->fb;
 +
 +	/*
-+	 * Latch the new scanout base; the hardware samples it at the next
-+	 * start-of-frame, so the swap takes effect tear-free at the frame
-+	 * boundary. Arm the flip-completion event for that vblank (sending it
-+	 * immediately if vblank cannot be enabled, e.g. no IRQ wired).
++	 * Asynchronous copy-on-flip: kick the host->VRAM copy into the back
++	 * buffer and hand the flip off to the DMA-done IRQ, which latches VBAR
++	 * onto the freshly copied buffer and arms the flip event. The vblank
++	 * reference is taken here (process context) and the event stashed; the
++	 * IRQ arms it under event_lock. Returns without blocking the commit.
 +	 */
-+	ocfb_set_scanout(ocfb, pipe->plane.state);
++	if (ocfb->copy_on_flip && ocfb->dma_irq > 0 && fb) {
++		unsigned int next = ocfb->vram_cur ^ 1;
++		unsigned long flags;
++
++		spin_lock_irqsave(&crtc->dev->event_lock, flags);
++		if (event && crtc->state->active &&
++		    drm_crtc_vblank_get(crtc) == 0) {
++			ocfb->flip_event = event;
++		} else if (event) {
++			drm_crtc_send_vblank_event(crtc, event);
++			ocfb->flip_event = NULL;
++		}
++		crtc->state->event = NULL;
++		ocfb->flip_slot = next;
++		ocfb->flip_bytes = fb->pitches[0] * fb->height;
++		ocfb->flip_pending = true;
++		spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
++
++		ocfb_dma_submit(ocfb, fb, next);
++		return;
++	}
++
++	/*
++	 * Synchronous copy-on-flip: copy into the back buffer and block on the
++	 * fence before latching the scanout there. Direct scanout just latches
++	 * the new host framebuffer base. Either way the hardware samples VBAR at
++	 * the next start-of-frame, so the swap is tear-free, and the flip event
++	 * is armed for that vblank below (sent immediately if vblank cannot be
++	 * enabled, e.g. no IRQ wired).
++	 */
++	if (ocfb->copy_on_flip && fb) {
++		if (ocfb_vram_flip_sync(ocfb, fb, ocfb->vram_cur ^ 1))
++			dev_err(ocfb->drm.dev, "flip copy failed; scanout unchanged\n");
++	} else {
++		ocfb_set_scanout(ocfb, pipe->plane.state);
++	}
 +
 +	if (event) {
 +		crtc->state->event = NULL;
@@ -691,8 +998,28 @@ index 00000000..30e83a18
 +	ocfb_wr(ocfb, OCFB_CTRL, ocfb->ctrl);
 +}
 +
++/*
++ * Copy-on-flip copies the whole framebuffer into a fixed-size VRAM scanout
++ * slot, so reject any framebuffer that would not fit (it would otherwise spill
++ * into the other buffer). Direct scanout has no such bound.
++ */
++static int ocfb_pipe_check(struct drm_simple_display_pipe *pipe,
++			   struct drm_plane_state *plane_state,
++			   struct drm_crtc_state *crtc_state)
++{
++	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++	struct drm_framebuffer *fb = plane_state->fb;
++
++	if (ocfb->copy_on_flip && fb &&
++	    (size_t)fb->pitches[0] * fb->height > ocfb->vram_slot)
++		return -EINVAL;
++
++	return 0;
++}
++
 +static const struct drm_simple_display_pipe_funcs ocfb_pipe_funcs = {
 +	.mode_valid = ocfb_pipe_mode_valid,
++	.check = ocfb_pipe_check,
 +	.enable = ocfb_pipe_enable,
 +	.disable = ocfb_pipe_disable,
 +	.update = ocfb_pipe_update,
@@ -700,8 +1027,17 @@ index 00000000..30e83a18
 +	.disable_vblank = ocfb_pipe_disable_vblank,
 +};
 +
++/*
++ * Use the dirty-tracking framebuffer create: it attaches a ->dirty handler
++ * (drm_atomic_helper_dirtyfb) so a DIRTYFB ioctl -- and the fbcon console,
++ * whose deferred-I/O flushes take the shadowed fbdev path and call ->dirty --
++ * turn into an atomic update that runs ocfb_pipe_update(). Copy-on-flip shows a
++ * snapshot taken at that commit, so without it in-place rendering would not be
++ * copied to VRAM and stay invisible until the next page flip. (Harmless for
++ * direct scanout, where the framebuffer is scanned out in place.)
++ */
 +static const struct drm_mode_config_funcs ocfb_mode_config_funcs = {
-+	.fb_create = drm_gem_fb_create,
++	.fb_create = drm_gem_fb_create_with_dirty,
 +	.atomic_check = drm_atomic_helper_check,
 +	.atomic_commit = drm_atomic_helper_commit,
 +};
@@ -764,6 +1100,101 @@ index 00000000..30e83a18
 +	return 0;
 +}
 +
++/*
++ * Optional copy-on-flip setup. When the device tree exposes the DMA command
++ * engine (reg[2]) and a VRAM aperture (reg[1]), each flip DMA-copies the host
++ * framebuffer into device-local VRAM and scanout reads from there; absent, the
++ * driver keeps the original direct host-scanout behaviour (copy_on_flip stays
++ * false). Must run after ocfb_modeset_init() so the pipe is initialised before
++ * the DMA-done IRQ, which touches the CRTC, can be requested.
++ */
++static int ocfb_dma_of_setup(struct ocfb_drm *ocfb, struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct resource *vram;
++	resource_size_t vram_size;
++	u32 id;
++	int ret;
++
++	/* reg[2]: DMA command CSRs. Absent -> no copy-on-flip. */
++	ocfb->dma_regs = devm_platform_ioremap_resource(pdev, 2);
++	if (IS_ERR(ocfb->dma_regs)) {
++		ocfb->dma_regs = NULL;
++		return 0;
++	}
++
++	/* reg[1]: VRAM aperture (host view, write-combining). */
++	vram = platform_get_resource(pdev, IORESOURCE_MEM, 1);
++	if (!vram)
++		return dev_err_probe(dev, -EINVAL,
++				     "DMA engine present but no VRAM aperture (reg[1])\n");
++	vram_size = resource_size(vram);
++
++	/* device-side base of VRAM as seen by the scanout and DMA-write masters */
++	of_property_read_u32(dev->of_node, "opencores,vram-base", &ocfb->vram_base);
++
++	/*
++	 * Size each scanout buffer for the largest framebuffer we can scan out
++	 * (the mode bounding box at 32 bpp, generously aligned) and place two of
++	 * them -- double-buffered -- at the base of the aperture. The aperture
++	 * itself may be far larger (e.g. a whole device-local DRAM channel); the
++	 * remainder is left for later use rather than mapped or cleared.
++	 */
++	ocfb->vram_slot = ALIGN((size_t)ocfb->drm.mode_config.max_width *
++				ocfb->drm.mode_config.max_height * 4, SZ_2M);
++	if ((resource_size_t)ocfb->vram_slot * 2 > vram_size)
++		return dev_err_probe(dev, -EINVAL,
++				     "VRAM aperture too small for two scanout buffers\n");
++
++	ocfb->vram = devm_ioremap_wc(dev, vram->start, (size_t)ocfb->vram_slot * 2);
++	if (!ocfb->vram)
++		return dev_err_probe(dev, -ENOMEM, "cannot map VRAM scanout buffers\n");
++
++	id = ocfb_dma_rd(ocfb, OCFB_DMA_ID);
++	if (id != OCFB_DMA_IDENT)
++		dev_warn(dev, "unexpected DMA engine id 0x%08x (want 0x%08x)\n",
++			 id, OCFB_DMA_IDENT);
++
++	/* soft-reset, enable the engine, drop any stale IRQ, mask IRQs for now. */
++	ocfb_dma_wr(ocfb, OCFB_DMA_CTRL, OCFB_DMA_CTRL_RESET);
++	ocfb_dma_wr(ocfb, OCFB_DMA_CTRL, OCFB_DMA_CTRL_ENABLE);
++	ocfb_dma_wr(ocfb, OCFB_DMA_IRQ, OCFB_DMA_IRQ_DONE | OCFB_DMA_IRQ_ERROR);
++	ocfb_dma_wr(ocfb, OCFB_DMA_IRQEN, 0);
++
++	/* clear VRAM so nothing stale is ever scanned out, and exercise the path */
++	memset_io(ocfb->vram, 0, (size_t)ocfb->vram_slot * 2);
++
++	ocfb->copy_on_flip = true;
++
++	/*
++	 * The DMA-done interrupt (reg interrupt index 1) is optional and selects
++	 * how flips complete: when wired, complete them from the interrupt (the
++	 * handler latches the new scanout base) instead of blocking the commit on
++	 * the fence; when absent, poll the fence (synchronous). This mirrors how
++	 * the vsync interrupt above selects real vblank vs immediate completion.
++	 */
++	ocfb->dma_irq = platform_get_irq_optional(pdev, 1);
++	if (ocfb->dma_irq == -ENXIO)
++		ocfb->dma_irq = 0;
++	else if (ocfb->dma_irq < 0)
++		return dev_err_probe(dev, ocfb->dma_irq, "failed to get DMA interrupt\n");
++
++	if (ocfb->dma_irq > 0) {
++		ret = devm_request_irq(dev, ocfb->dma_irq, ocfb_dma_irq_handler, 0,
++				       "ocfb-dma", ocfb);
++		if (ret)
++			return dev_err_probe(dev, ret, "failed to request DMA interrupt\n");
++		ocfb_dma_wr(ocfb, OCFB_DMA_IRQEN,
++			    OCFB_DMA_IRQ_DONE | OCFB_DMA_IRQ_ERROR);
++	}
++
++	dev_info(dev, "copy-on-flip: %llu MiB VRAM aperture, 2x %u KiB scanout buffers, %s flips\n",
++		 (unsigned long long)vram_size / SZ_1M, ocfb->vram_slot / 1024,
++		 ocfb->dma_irq > 0 ? "async" : "sync");
++
++	return 0;
++}
++
 +static int ocfb_probe(struct platform_device *pdev)
 +{
 +	struct device *dev = &pdev->dev;
@@ -796,8 +1227,10 @@ index 00000000..30e83a18
 +	ocfb->has_pitch = of_property_read_bool(dev->of_node,
 +						"opencores,has-pitch");
 +
-+	/* Optional address-window translation for the scanout base (e.g. the
-+	 * FPGA-to-SDRAM bridge's DRAM-relative addressing). Default 0 = 1:1. */
++	/*
++	 * Optional address-window translation for the scanout base (e.g. a bus
++	 * window with DRAM-relative addressing). Default 0 = 1:1.
++	 */
 +	of_property_read_u32(dev->of_node, "opencores,vbar-offset",
 +			     &ocfb->vbar_offset);
 +
@@ -839,6 +1272,11 @@ index 00000000..30e83a18
 +		if (ret)
 +			return dev_err_probe(dev, ret, "failed to request interrupt\n");
 +	}
++
++	/* optional copy-on-flip via the DMA engine + device-local VRAM */
++	ret = ocfb_dma_of_setup(ocfb, pdev);
++	if (ret)
++		return ret;
 +
 +	ret = drm_dev_register(drm, 0);
 +	if (ret)
