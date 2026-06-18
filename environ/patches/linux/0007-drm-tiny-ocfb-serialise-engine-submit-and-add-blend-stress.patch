@@ -1,0 +1,226 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Thu, 18 Jun 2026 13:00:00 +0200
+Subject: [PATCH] drm/tiny: ocfb: serialise engine submit, add blend-stress hook
+
+The command engine now has two potential submitters -- the copy-on-flip
+path and the debugfs bring-up ops -- and they would race. The poll-idle
+before each doorbell guards against an op already in flight but is not
+mutual exclusion: two submitters can both pass it and then interleave the
+fence seqno, the descriptor registers and the (one-shot, idle-only)
+doorbell. Add a dma_lock mutex around the submit critical section
+(seqno -> poll-idle -> program -> doorbell) in both ocfb_dma_submit and
+ocfb_blit_sync. The fence wait stays outside the lock, so a flip and a
+bring-up op only serialise for the brief submit, never a whole transfer,
+and the steady-state flip path is uncontended.
+
+Add an ocfb_blit_stress debugfs file (write 1 to start, 0 to stop) that
+runs a kthread hammering back-to-back VRAM->VRAM blends into a scratch
+region past the two scanout slots (never displayed) -- sustained EMIF
+load to test scanout contention while the display runs. The kthread is
+stopped in ocfb_remove to avoid a use-after-free on unbind.
+CONFIG_DEBUG_FS-gated; no normal-path behaviour change.
+
+Signed-off-by: Steffen Persvold <spersvold@gmail.com>
+---
+diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
+index 078798a2..3327b999 100644
+--- a/drivers/gpu/drm/tiny/ocfb-drm.c
++++ b/drivers/gpu/drm/tiny/ocfb-drm.c
+@@ -35,8 +35,10 @@
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
++#include <linux/kthread.h>
+ #include <linux/math64.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/of.h>
+ #include <linux/of_reserved_mem.h>
+ #include <linux/platform_device.h>
+@@ -179,6 +181,8 @@ struct ocfb_drm {
+ 	u32 vram_slot;			/* per-buffer stride within VRAM (bytes) */
+ 	unsigned int vram_cur;		/* VRAM buffer currently scanned out (0/1) */
+ 	u32 dma_seqno;			/* monotonic DMA fence seqno */
++	struct mutex dma_lock;		/* serialises engine submit (flip + bring-up) */
++	struct task_struct *stress_task;/* debugfs blend-stress kthread, or NULL */
+ 	/* async flip hand-off: pipe_update arms it, the DMA-done IRQ resolves it */
+ 	struct drm_pending_vblank_event *flip_event;
+ 	unsigned int flip_slot;
+@@ -554,17 +558,22 @@ static u32 ocfb_dma_submit(struct ocfb_drm *ocfb, struct drm_framebuffer *fb,
+ 	u32 src = lower_32_bits(gem->dma_addr - ocfb->vbar_offset);
+ 	u32 dst = ocfb->vram_base + slot * ocfb->vram_slot;
+ 	u32 bytes = fb->pitches[0] * fb->height;
+-	u32 seqno = ++ocfb->dma_seqno;
++	u32 seqno;
+ 	u32 st;
+ 
+ 	/*
+-	 * The doorbell is a one-shot pulse the engine only latches while idle, so
+-	 * one rung while a previous command is still in flight is silently dropped
+-	 * and its fence never advances. Atomic commits are serialised per-CRTC,
+-	 * but a modeset's initial copy can race an async flip from the outgoing
+-	 * client that is still settling (an fbcon deferred-I/O flush, or the
+-	 * previous DRM master), so wait for idle before kicking.
++	 * dma_lock serialises against any other engine submitter (the debugfs
++	 * bring-up path): it stops two submitters from interleaving the seqno,
++	 * descriptor registers and doorbell. The doorbell is a one-shot pulse the
++	 * engine only latches while idle, so one rung while a previous command is
++	 * still in flight is silently dropped and its fence never advances. Atomic
++	 * commits are serialised per-CRTC, but a modeset's initial copy can race an
++	 * async flip from the outgoing client that is still settling (an fbcon
++	 * deferred-I/O flush, or the previous DRM master), so wait for idle inside
++	 * the lock before kicking.
+ 	 */
++	mutex_lock(&ocfb->dma_lock);
++	seqno = ++ocfb->dma_seqno;
+ 	if (read_poll_timeout(ocfb_dma_rd, st, st & OCFB_DMA_STAT_IDLE, 10,
+ 			      OCFB_DMA_TIMEOUT_US, false, ocfb, OCFB_DMA_STATUS))
+ 		dev_warn(ocfb->drm.dev, "DMA not idle before submit (status=0x%08x)\n",
+@@ -578,6 +587,7 @@ static u32 ocfb_dma_submit(struct ocfb_drm *ocfb, struct drm_framebuffer *fb,
+ 	ocfb_dma_wr(ocfb, OCFB_DMA_HEIGHT, 1);
+ 	ocfb_dma_wr(ocfb, OCFB_DMA_OP, OCFB_DMA_OP_COPY2D);
+ 	ocfb_dma_wr(ocfb, OCFB_DMA_DOORBELL, seqno);	/* kick */
++	mutex_unlock(&ocfb->dma_lock);
+ 
+ 	return seqno;
+ }
+@@ -1076,6 +1086,7 @@ static int ocfb_dma_of_setup(struct ocfb_drm *ocfb, struct platform_device *pdev
+ 	/* clear VRAM so nothing stale is ever scanned out, and exercise the path */
+ 	memset_io(ocfb->vram, 0, (size_t)ocfb->vram_slot * 2);
+ 
++	mutex_init(&ocfb->dma_lock);
+ 	ocfb->copy_on_flip = true;
+ 
+ 	/*
+@@ -1121,23 +1132,28 @@ static int ocfb_blit_sync(struct ocfb_drm *ocfb, u32 op,
+ 			  u32 src, u32 dst, u32 spitch, u32 dpitch,
+ 			  u32 width, u32 height)
+ {
+-	u32 seqno = ++ocfb->dma_seqno;
++	u32 seqno;
+ 	u32 st;
++	int ret = 0;
+ 
++	mutex_lock(&ocfb->dma_lock);
++	seqno = ++ocfb->dma_seqno;
+ 	if (read_poll_timeout(ocfb_dma_rd, st, st & OCFB_DMA_STAT_IDLE, 10,
+-			      OCFB_DMA_TIMEOUT_US, false, ocfb, OCFB_DMA_STATUS))
+-		return -EBUSY;
++			      OCFB_DMA_TIMEOUT_US, false, ocfb, OCFB_DMA_STATUS)) {
++		ret = -EBUSY;
++	} else {
++		ocfb_dma_wr(ocfb, OCFB_DMA_SRC, src);
++		ocfb_dma_wr(ocfb, OCFB_DMA_DST, dst);
++		ocfb_dma_wr(ocfb, OCFB_DMA_SRCPITCH, spitch);
++		ocfb_dma_wr(ocfb, OCFB_DMA_DSTPITCH, dpitch);
++		ocfb_dma_wr(ocfb, OCFB_DMA_WIDTH, width);
++		ocfb_dma_wr(ocfb, OCFB_DMA_HEIGHT, height);
++		ocfb_dma_wr(ocfb, OCFB_DMA_OP, op);
++		ocfb_dma_wr(ocfb, OCFB_DMA_DOORBELL, seqno);
++	}
++	mutex_unlock(&ocfb->dma_lock);
+ 
+-	ocfb_dma_wr(ocfb, OCFB_DMA_SRC, src);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_DST, dst);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_SRCPITCH, spitch);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_DSTPITCH, dpitch);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_WIDTH, width);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_HEIGHT, height);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_OP, op);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_DOORBELL, seqno);
+-
+-	return ocfb_dma_wait(ocfb, seqno);
++	return ret ? ret : ocfb_dma_wait(ocfb, seqno);
+ }
+ 
+ /* Software reference for premultiplied SRC_OVER -- must match vctrl_dma_blend. */
+@@ -1243,6 +1259,51 @@ static ssize_t ocfb_fill_write(struct file *f, const char __user *ubuf,
+ 	return ret ? ret : len;
+ }
+ 
++/*
++ * Blend-stress kthread: hammer back-to-back VRAM->VRAM blends into a scratch
++ * region past the two scanout slots (never displayed) to load the EMIF while
++ * the display scans out -- the sustained-contention test a one-shot cannot do.
++ * It submits through ocfb_blit_sync, so dma_lock interleaves it with
++ * copy-on-flip without corrupting a flip or dropping a doorbell.
++ */
++static int ocfb_stress_thread(void *data)
++{
++	struct ocfb_drm *ocfb = data;
++	u32 base = ocfb->vram_base + 2 * ocfb->vram_slot;	/* past both slots */
++	u32 dst = base;
++	u32 src = base + SZ_1M;
++	const u32 w = 512 * 4, h = 64;				/* 512x64 px, 64 beats/row */
++
++	while (!kthread_should_stop()) {
++		ocfb_blit_sync(ocfb, OCFB_DMA_OP_BLEND, src, dst, w, w, w, h);
++		cond_resched();
++	}
++	return 0;
++}
++
++static ssize_t ocfb_stress_write(struct file *f, const char __user *ubuf,
++				 size_t len, loff_t *ppos)
++{
++	struct ocfb_drm *ocfb = f->private_data;
++	bool on;
++	int ret = kstrtobool_from_user(ubuf, len, &on);
++
++	if (ret)
++		return ret;
++	if (on && !ocfb->stress_task) {
++		ocfb->stress_task = kthread_run(ocfb_stress_thread, ocfb, "ocfb-stress");
++		if (IS_ERR(ocfb->stress_task)) {
++			ret = PTR_ERR(ocfb->stress_task);
++			ocfb->stress_task = NULL;
++			return ret;
++		}
++	} else if (!on && ocfb->stress_task) {
++		kthread_stop(ocfb->stress_task);
++		ocfb->stress_task = NULL;
++	}
++	return len;
++}
++
+ static const struct file_operations ocfb_selftest_fops = {
+ 	.owner   = THIS_MODULE,
+ 	.open    = simple_open,
+@@ -1257,6 +1318,13 @@ static const struct file_operations ocfb_fill_fops = {
+ 	.llseek  = default_llseek,
+ };
+ 
++static const struct file_operations ocfb_stress_fops = {
++	.owner   = THIS_MODULE,
++	.open    = simple_open,
++	.write   = ocfb_stress_write,
++	.llseek  = default_llseek,
++};
++
+ static void ocfb_debugfs_init(struct ocfb_drm *ocfb)
+ {
+ 	struct dentry *root = ocfb->drm.primary->debugfs_root;
+@@ -1265,6 +1333,7 @@ static void ocfb_debugfs_init(struct ocfb_drm *ocfb)
+ 		return;
+ 	debugfs_create_file("ocfb_selftest", 0200, root, ocfb, &ocfb_selftest_fops);
+ 	debugfs_create_file("ocfb_fill", 0200, root, ocfb, &ocfb_fill_fops);
++	debugfs_create_file("ocfb_blit_stress", 0200, root, ocfb, &ocfb_stress_fops);
+ }
+ #else
+ static inline void ocfb_debugfs_init(struct ocfb_drm *ocfb) {}
+@@ -1367,6 +1436,12 @@ static int ocfb_probe(struct platform_device *pdev)
+ static void ocfb_remove(struct platform_device *pdev)
+ {
+ 	struct drm_device *drm = platform_get_drvdata(pdev);
++#if defined(CONFIG_DEBUG_FS)
++	struct ocfb_drm *ocfb = drm_to_ocfb(drm);
++
++	if (ocfb->stress_task)
++		kthread_stop(ocfb->stress_task);
++#endif
+ 
+ 	drm_dev_unregister(drm);
+ 	drm_atomic_helper_shutdown(drm);
+-- 
+2.43.0
