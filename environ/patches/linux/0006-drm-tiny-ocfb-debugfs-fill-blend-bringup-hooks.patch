@@ -1,0 +1,226 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Wed, 18 Jun 2026 12:00:00 +0200
+Subject: [PATCH] drm/tiny: ocfb: add debugfs FILL/BLEND bring-up hooks
+
+The command engine's FILL and BLEND opcodes are not reachable through the
+normal KMS path: a dumb-buffer KMS driver does all 2D in software (pixman)
+and only uses the engine for copy-on-flip (COPY2D). Add debugfs hooks to
+exercise the new opcodes directly on hardware:
+
+  ocfb_selftest - FILL a VRAM region and read it back, then composite a
+                  source over an in-place destination (VRAM->VRAM premultiplied
+                  SRC_OVER, the read-before-write case the RTL sim could not
+                  cover) and read-back-verify against a software reference. Runs
+                  in the off-screen scanout slot, so it does not disturb the
+                  display; reports PASS/FAIL to the kernel log.
+  ocfb_fill     - write a 0xAARRGGBB color to fill the live scanout slot, for
+                  eyeballing the FILL path on the panel.
+
+Guarded by CONFIG_DEBUG_FS; compiled out otherwise. This is a bring-up aid
+and carries no normal-path behaviour change.
+
+Signed-off-by: Steffen Persvold <spersvold@gmail.com>
+---
+diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
+index f82d7c41..078798a2 100644
+--- a/drivers/gpu/drm/tiny/ocfb-drm.c
++++ b/drivers/gpu/drm/tiny/ocfb-drm.c
+@@ -30,6 +30,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/debugfs.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+@@ -138,6 +139,8 @@
+ #define OCFB_DMA_IRQ_ERROR	0x00000002 /* command faulted */
+ 
+ #define OCFB_DMA_OP_COPY2D	0x01	/* 2D strided copy (height 1 => linear) */
++#define OCFB_DMA_OP_FILL	0x02	/* solid fill: SRC = 32b ARGB color, replicated */
++#define OCFB_DMA_OP_BLEND	0x04	/* premultiplied SRC_OVER: src OVER dst -> dst */
+ 
+ /* bound the wait for a copy to complete (a full 1080p frame is a few ms) */
+ #define OCFB_DMA_TIMEOUT_US	100000
+@@ -1104,6 +1107,169 @@ static int ocfb_dma_of_setup(struct ocfb_drm *ocfb, struct platform_device *pdev
+ 	return 0;
+ }
+ 
++#if defined(CONFIG_DEBUG_FS)
++/*
++ * Bring-up hooks for the FILL / BLEND command-engine ops. These are not
++ * reachable through the normal KMS path (a dumb-buffer KMS driver does all 2D
++ * in software and only uses the engine for copy-on-flip), so they exist to
++ * exercise the new opcodes directly on hardware. They share the one command
++ * engine with the flip path -- run them while the display is quiescent.
++ */
++
++/* Synchronous arbitrary blit: program one descriptor, ring it, block on fence. */
++static int ocfb_blit_sync(struct ocfb_drm *ocfb, u32 op,
++			  u32 src, u32 dst, u32 spitch, u32 dpitch,
++			  u32 width, u32 height)
++{
++	u32 seqno = ++ocfb->dma_seqno;
++	u32 st;
++
++	if (read_poll_timeout(ocfb_dma_rd, st, st & OCFB_DMA_STAT_IDLE, 10,
++			      OCFB_DMA_TIMEOUT_US, false, ocfb, OCFB_DMA_STATUS))
++		return -EBUSY;
++
++	ocfb_dma_wr(ocfb, OCFB_DMA_SRC, src);
++	ocfb_dma_wr(ocfb, OCFB_DMA_DST, dst);
++	ocfb_dma_wr(ocfb, OCFB_DMA_SRCPITCH, spitch);
++	ocfb_dma_wr(ocfb, OCFB_DMA_DSTPITCH, dpitch);
++	ocfb_dma_wr(ocfb, OCFB_DMA_WIDTH, width);
++	ocfb_dma_wr(ocfb, OCFB_DMA_HEIGHT, height);
++	ocfb_dma_wr(ocfb, OCFB_DMA_OP, op);
++	ocfb_dma_wr(ocfb, OCFB_DMA_DOORBELL, seqno);
++
++	return ocfb_dma_wait(ocfb, seqno);
++}
++
++/* Software reference for premultiplied SRC_OVER -- must match vctrl_dma_blend. */
++static u8 ocfb_div255(u32 x)		{ u32 t = x + 128; return (t + (t >> 8)) >> 8; }
++static u8 ocfb_over8(u8 sc, u8 dc, u8 ia){ u32 s = sc + ocfb_div255((u32)dc * ia);
++					   return s > 255 ? 255 : s; }
++static u32 ocfb_over32(u32 s, u32 d)
++{
++	u8 ia = 255 - (s >> 24);
++
++	return ((u32)ocfb_over8(s >> 24, d >> 24, ia) << 24) |
++	       ((u32)ocfb_over8(s >> 16, d >> 16, ia) << 16) |
++	       ((u32)ocfb_over8(s >>  8, d >>  8, ia) <<  8) |
++	        (u32)ocfb_over8(s,       d,       ia);
++}
++
++/* Deterministic test pixels (premultiplied: src.rgb <= src.a; opaque dst). */
++#define OCFB_TEST_PIX	64
++static u32 ocfb_test_src(u32 i)	{ u8 a = i * 37 + 5;
++				  return ((u32)a << 24) | ((u32)a << 16) |
++					 ((u32)(a >> 1) << 8) | (a >> 2); }
++static u32 ocfb_test_dst(u32 i)	{ return 0xff000000u | (((i * 29) & 0xff) << 16) |
++					 (((i * 7 + 13) & 0xff) << 8) | ((i * 53) & 0xff); }
++
++/*
++ * Self-test: FILL a VRAM region and read it back, then BLEND a source over an
++ * in-place destination (VRAM->VRAM, the read-before-write case sim could not
++ * cover) and read back the composited result. Runs in the off-screen scanout
++ * slot so it never disturbs the display; reports PASS/FAIL to the log.
++ */
++static int ocfb_blit_selftest(struct ocfb_drm *ocfb)
++{
++	unsigned int slot = ocfb->vram_cur ^ 1;		/* off-screen */
++	u32 base = ocfb->vram_base + slot * ocfb->vram_slot;
++	void __iomem *vbuf = ocfb->vram + (size_t)slot * ocfb->vram_slot;
++	const u32 dst_off = 0, src_off = SZ_64K;	/* both within the slot */
++	const u32 fill_col = 0xff5533aa;
++	u32 i, bad = 0;
++	int ret;
++
++	/* FILL + read-back */
++	ret = ocfb_blit_sync(ocfb, OCFB_DMA_OP_FILL, fill_col, base + dst_off,
++			     0, OCFB_TEST_PIX * 4, OCFB_TEST_PIX * 4, 1);
++	if (ret)
++		return ret;
++	rmb();
++	for (i = 0; i < OCFB_TEST_PIX; i++) {
++		u32 got = ioread32(vbuf + dst_off + i * 4);
++
++		if (got != fill_col && ++bad <= 4)
++			dev_err(ocfb->drm.dev, "FILL px %u: got %08x want %08x\n",
++				i, got, fill_col);
++	}
++
++	/* prefill src (over) and dst (under) in VRAM, then BLEND in place */
++	for (i = 0; i < OCFB_TEST_PIX; i++) {
++		iowrite32(ocfb_test_src(i), vbuf + src_off + i * 4);
++		iowrite32(ocfb_test_dst(i), vbuf + dst_off + i * 4);
++	}
++	wmb();
++	ret = ocfb_blit_sync(ocfb, OCFB_DMA_OP_BLEND, base + src_off, base + dst_off,
++			     OCFB_TEST_PIX * 4, OCFB_TEST_PIX * 4, OCFB_TEST_PIX * 4, 1);
++	if (ret)
++		return ret;
++	rmb();
++	for (i = 0; i < OCFB_TEST_PIX; i++) {
++		u32 exp = ocfb_over32(ocfb_test_src(i), ocfb_test_dst(i));
++		u32 got = ioread32(vbuf + dst_off + i * 4);
++
++		if (got != exp && ++bad <= 8)
++			dev_err(ocfb->drm.dev, "BLEND px %u: got %08x want %08x\n",
++				i, got, exp);
++	}
++
++	dev_info(ocfb->drm.dev, "blit selftest: %s (%u px, FILL + VRAM->VRAM BLEND)\n",
++		 bad ? "FAIL" : "PASS", OCFB_TEST_PIX);
++	return bad ? -EIO : 0;
++}
++
++static ssize_t ocfb_selftest_write(struct file *f, const char __user *ubuf,
++				   size_t len, loff_t *ppos)
++{
++	struct ocfb_drm *ocfb = f->private_data;
++	int ret = ocfb_blit_selftest(ocfb);
++
++	return ret ? ret : len;
++}
++
++/* Visible FILL: write a 0xAARRGGBB color to fill the live scanout slot. */
++static ssize_t ocfb_fill_write(struct file *f, const char __user *ubuf,
++			       size_t len, loff_t *ppos)
++{
++	struct ocfb_drm *ocfb = f->private_data;
++	u32 col;
++	int ret;
++
++	ret = kstrtou32_from_user(ubuf, len, 0, &col);
++	if (ret)
++		return ret;
++	ret = ocfb_blit_sync(ocfb, OCFB_DMA_OP_FILL, col,
++			     ocfb->vram_base + ocfb->vram_cur * ocfb->vram_slot,
++			     0, ocfb->vram_slot, ocfb->vram_slot, 1);
++	return ret ? ret : len;
++}
++
++static const struct file_operations ocfb_selftest_fops = {
++	.owner   = THIS_MODULE,
++	.open    = simple_open,
++	.write   = ocfb_selftest_write,
++	.llseek  = default_llseek,
++};
++
++static const struct file_operations ocfb_fill_fops = {
++	.owner   = THIS_MODULE,
++	.open    = simple_open,
++	.write   = ocfb_fill_write,
++	.llseek  = default_llseek,
++};
++
++static void ocfb_debugfs_init(struct ocfb_drm *ocfb)
++{
++	struct dentry *root = ocfb->drm.primary->debugfs_root;
++
++	if (!ocfb->copy_on_flip)		/* need the DMA engine + VRAM */
++		return;
++	debugfs_create_file("ocfb_selftest", 0200, root, ocfb, &ocfb_selftest_fops);
++	debugfs_create_file("ocfb_fill", 0200, root, ocfb, &ocfb_fill_fops);
++}
++#else
++static inline void ocfb_debugfs_init(struct ocfb_drm *ocfb) {}
++#endif /* CONFIG_DEBUG_FS */
++
+ static int ocfb_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -1191,6 +1357,8 @@ static int ocfb_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
++	ocfb_debugfs_init(ocfb);
++
+ 	drm_client_setup_with_color_mode(drm, 16);
+ 
+ 	return 0;
+-- 
+2.43.0
