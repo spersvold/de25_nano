@@ -1,0 +1,528 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Thu, 18 Jun 2026 21:30:00 +0200
+Subject: [PATCH] drm/tiny: ocfb: damage-aware copy-on-flip via deferred
+ coalescing
+
+In-place rendering (fbcon, X DIRTYFB) copied the whole framebuffer into VRAM on
+every atomic commit. Restructure it as a deferred, coalesced partial present so
+only the dirty region moves, without throttling clients that issue many small
+DIRTYFB updates per frame.
+
+A DIRTYFB commit (old_state->fb == fb) accumulates the merged damage rect and
+snapshots the source parameters under damage_lock, then returns immediately --
+no copy, no wait. A vblank reference held for the lifetime of the enabled pipe
+keeps the vsync IRQ firing; it schedules damage_work just after a start-of-
+frame, when the back slot (vram_cur ^ 1) has just been freed. The worker copies
+the coalesced damage into that slot and latches it, adopted tear-free at the
+next SOF. Many DIRTYFBs between two SOFs collapse into one present, so a client
+is never paced down to the refresh rate.
+
+The two scanout slots are double-buffered, so each carries a per-slot backlog
+(slot_damage[]) of the damage it owes since it last held a full frame: the
+worker copies slot_damage[back] united with the new damage, then accrues the
+new damage to the other slot, and keeps presenting until both slots owe
+nothing. A slot left one generation stale is thus caught up rather than shown
+with stale bands.
+
+The async page-flip path seeds slot_damage[] the same way pipe_enable does --
+the full-copied slot becomes clean, the slot it leaves owes a full frame -- so
+the first in-place present after a page flip refreshes the stale slot fully
+instead of painting its small dirty rect over a leftover page-flipped frame.
+
+A partial copy uses a strided 2D COPY2D with its row base beat-aligned and the
+final beat write-strobe masked; a whole-frame region uses the linear full-frame
+copy. A pitch that is not beat-aligned forces a full copy.
+
+Adds a CONFIG_DEBUG_FS ocfb_damage file: read for coalescing counters
+(dirty/present/partial/full/bytes), write 0/1 to toggle per-blit logging of
+each DIRTYFB rect and the descriptor it becomes.
+---
+ drivers/gpu/drm/tiny/ocfb-drm.c | 336 ++++++++++++++++++++++++++++++--
+ 1 file changed, 318 insertions(+), 18 deletions(-)
+
+diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
+index 4223f80c..d6b02c4a 100644
+--- a/drivers/gpu/drm/tiny/ocfb-drm.c
++++ b/drivers/gpu/drm/tiny/ocfb-drm.c
+@@ -45,10 +45,12 @@
+ #include <linux/platform_device.h>
+ #include <linux/sizes.h>
+ #include <linux/slab.h>
++#include <linux/workqueue.h>
+ 
+ #include <drm/clients/drm_client_setup.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_connector.h>
++#include <drm/drm_damage_helper.h>
+ #include <drm/drm_device.h>
+ #include <drm/drm_drv.h>
+ #include <drm/drm_edid.h>
+@@ -62,6 +64,7 @@
+ #include <drm/drm_modes.h>
+ #include <drm/drm_module.h>
+ #include <drm/drm_probe_helper.h>
++#include <drm/drm_rect.h>
+ #include <drm/drm_simple_kms_helper.h>
+ #include <drm/drm_vblank.h>
+ 
+@@ -169,6 +172,14 @@
+ #define OCFB_DESC_WORDS		8
+ #define OCFB_DESC_BYTES		(OCFB_DESC_WORDS * 4)	/* 32 B == one AXI beat */
+ 
++/*
++ * The engine transfers on its AXI data-bus width (256-bit = 32-byte beats) and
++ * rounds every transfer base down to a beat (see vctrl_dma_rd.sv). Partial-copy
++ * row bases must be beat-aligned; keep this in sync with the engine's
++ * AXI_DATA_WIDTH / 8.
++ */
++#define OCFB_DMA_ALIGN		32
++
+ /*
+  * Descriptor word layout, matching dma_desc_t in the engine RTL. The engine
+  * reads descriptors from memory with its AXI data master (not the byte-swapped
+@@ -240,6 +251,28 @@ struct ocfb_drm {
+ 	unsigned int flip_slot;
+ 	u32 flip_bytes;
+ 	bool flip_pending;
++	/*
++	 * Deferred damage presentation (in-place rendering: fbcon / X DIRTYFB).
++	 * DIRTYFB accumulates damage and snapshots the source params; the vsync IRQ
++	 * queues @damage_work, which presents the coalesced damage once per frame
++	 * (copy into the back slot + latch). slot_damage[] is the per-slot backlog,
++	 * since the back slot is one generation stale when it is the target.
++	 */
++	spinlock_t damage_lock;		/* protects the damage_* fields below */
++	struct drm_rect damage_pending;	/* coalesced damage not yet presented */
++	bool present_active;		/* a present cycle holds a vblank ref */
++	u32 damage_src;			/* host source base (read-master space) */
++	u32 damage_pitch;		/* fb pitch (bytes) */
++	u32 damage_w, damage_h;		/* fb dimensions (pixels) */
++	u32 damage_cpp;			/* bytes per pixel */
++	struct work_struct damage_work;
++	struct drm_rect slot_damage[2];	/* damage owed to each slot (OCFB_RECT_NONE = clean) */
++	/* observability (CONFIG_DEBUG_FS) */
++	bool damage_log;		/* verbose per-blit logging (debugfs toggle) */
++	u64 dbg_dirty;			/* DIRTYFB updates accumulated */
++	u64 dbg_present;		/* presents performed */
++	u64 dbg_partial;		/* presents that were partial (vs full) */
++	u64 dbg_bytes;			/* total bytes copied by presents */
+ 	struct drm_simple_display_pipe pipe;
+ 	struct drm_connector connector;
+ };
+@@ -742,6 +775,62 @@ static struct dma_fence *ocfb_flip_submit(struct ocfb_drm *ocfb,
+ 				bytes, bytes, bytes, 1);
+ }
+ 
++/* "no damage owed" sentinel: a union-neutral, non-visible rectangle. */
++#define OCFB_RECT_NONE	((struct drm_rect){ .x1 = INT_MAX, .y1 = INT_MAX, \
++					    .x2 = 0, .y2 = 0 })
++
++static void ocfb_rect_union(struct drm_rect *acc, const struct drm_rect *r)
++{
++	acc->x1 = min(acc->x1, r->x1);
++	acc->y1 = min(acc->y1, r->y1);
++	acc->x2 = max(acc->x2, r->x2);
++	acc->y2 = max(acc->y2, r->y2);
++}
++
++/*
++ * Submit a copy of @region (pixels) into VRAM slot @slot from host base @src at
++ * row stride @pitch (@cpp bytes/pixel, frame @w x @h). A region spanning the
++ * whole frame uses the linear full-frame path (one contiguous run, byte-
++ * identical including padding); a sub-rectangle uses a strided 2D COPY2D with
++ * its row base beat-aligned (the engine rounds transfer bases down to a 32-byte
++ * beat) and the partial last beat write-strobe masked -- correct for any pixel
++ * format since the copy is byte-addressed into a byte-identical VRAM mirror.
++ * Returns the completion fence. Raw params (not a drm_framebuffer) so the
++ * deferred worker can run from a snapshot without touching live plane state.
++ */
++static struct dma_fence *ocfb_copy_region(struct ocfb_drm *ocfb, u32 src,
++					  unsigned int slot, u32 pitch, u32 cpp,
++					  u32 w, u32 h, const struct drm_rect *region)
++{
++	u32 dst = ocfb->vram_base + slot * ocfb->vram_slot;
++	u32 xb, off, rbytes;
++
++	if (region->x1 <= 0 && region->y1 <= 0 &&
++	    region->x2 >= (int)w && region->y2 >= (int)h) {
++		u32 bytes = pitch * h;			/* full frame: linear run */
++
++		if (ocfb->damage_log)
++			dev_info(ocfb->drm.dev,
++				 "blit FULL  slot=%u src=%08x dst=%08x pitch=%u bytes=%u (%ux%u)\n",
++				 slot, src, dst, pitch, bytes, w, h);
++		return ocfb_ring_submit(ocfb, OCFB_DMA_OP_COPY2D, src, dst,
++					bytes, bytes, bytes, 1);
++	}
++
++	xb     = (region->x1 * cpp) & ~(OCFB_DMA_ALIGN - 1);	/* beat-align left */
++	off    = region->y1 * pitch + xb;
++	rbytes = region->x2 * cpp - xb;
++	if (ocfb->damage_log)
++		dev_info(ocfb->drm.dev,
++			 "blit PART  slot=%u rect[%d,%d..%d,%d] xb=%u off=%u src=%08x dst=%08x w=%u(%s) h=%u pitch=%u\n",
++			 slot, region->x1, region->y1, region->x2, region->y2,
++			 xb, off, src + off, dst + off, rbytes,
++			 (rbytes & (OCFB_DMA_ALIGN - 1)) ? "tail" : "aligned",
++			 drm_rect_height(region), pitch);
++	return ocfb_ring_submit(ocfb, OCFB_DMA_OP_COPY2D, src + off, dst + off,
++				pitch, pitch, rbytes, drm_rect_height(region));
++}
++
+ /*
+  * Point the scanout master at VRAM slot @slot and bound its prefetch to the
+  * @bytes just copied there (VSIZ; the hardware bounds its read-ahead to this).
+@@ -905,9 +994,106 @@ static irqreturn_t ocfb_irq_handler(int irq, void *arg)
+ 	ocfb_wr(ocfb, OCFB_STAT, OCFB_STAT_VINT);	/* W1C */
+ 	drm_crtc_handle_vblank(&ocfb->pipe.crtc);
+ 
++	/*
++	 * Run a deferred damage present just after this SOF: the slot the SOF just
++	 * freed is now safe to write, and its copy will be latched tear-free at the
++	 * next SOF. present_active is a benign racy read (an extra schedule is a
++	 * no-op in the worker).
++	 */
++	if (ocfb->present_active)
++		schedule_work(&ocfb->damage_work);
++
+ 	return IRQ_HANDLED;
+ }
+ 
++/*
++ * Deferred damage present, queued by the vsync IRQ so it runs just after a SOF.
++ * The slot the SOF just freed (vram_cur ^ 1) is now safe to write; copy the
++ * coalesced damage -- plus that slot's backlog, since it is one generation stale
++ * -- from the snapshot ocfb_pipe_update took, wait the copy, then latch it
++ * (adopted tear-free at the next SOF). Coalesces every DIRTYFB since the last
++ * present, so X is never throttled. Keeps running until both slots are current.
++ */
++static void ocfb_damage_work(struct work_struct *work)
++{
++	struct ocfb_drm *ocfb = container_of(work, struct ocfb_drm, damage_work);
++	struct drm_rect taken, region, full;
++	u32 src, pitch, cpp, w, h;
++	struct dma_fence *fence;
++	unsigned int back;
++	unsigned long flags;
++	bool partial;
++
++	spin_lock_irqsave(&ocfb->damage_lock, flags);
++	back  = ocfb->vram_cur ^ 1;
++	taken = ocfb->damage_pending;
++	ocfb->damage_pending = OCFB_RECT_NONE;
++	src   = ocfb->damage_src;
++	pitch = ocfb->damage_pitch;
++	cpp   = ocfb->damage_cpp;
++	w     = ocfb->damage_w;
++	h     = ocfb->damage_h;
++	full  = (struct drm_rect){ 0, 0, w, h };
++
++	/*
++	 * Without a beat-aligned pitch partial rows are impossible, so any new
++	 * damage means a whole-frame copy.
++	 */
++	if ((pitch % OCFB_DMA_ALIGN) && drm_rect_visible(&taken))
++		taken = full;
++
++	/*
++	 * Copy the back slot's owed backlog plus any new damage. New damage also
++	 * accrues to the *other* slot, to be flushed there on a following present:
++	 * the back slot is one generation stale, so after flipping to it the slot
++	 * we left still owes the latest damage. Keep presenting (present_active)
++	 * until BOTH slots owe nothing -- otherwise that slot stays stale and the
++	 * display alternates onto stale content (the stripes). At most one extra
++	 * present after activity stops.
++	 */
++	region = ocfb->slot_damage[back];
++	ocfb_rect_union(&region, &taken);
++	if (drm_rect_visible(&taken))
++		ocfb_rect_union(&ocfb->slot_damage[back ^ 1], &taken);
++	ocfb->slot_damage[back] = OCFB_RECT_NONE;
++	if (!drm_rect_intersect(&region, &full))
++		region = OCFB_RECT_NONE;		/* nothing owed this round */
++	if (!drm_rect_visible(&ocfb->slot_damage[0]) &&
++	    !drm_rect_visible(&ocfb->slot_damage[1]))
++		ocfb->present_active = false;		/* both slots current after this */
++	spin_unlock_irqrestore(&ocfb->damage_lock, flags);
++
++	if (!drm_rect_visible(&region))			/* spurious wake / already drained */
++		return;
++
++	fence = ocfb_copy_region(ocfb, src, back, pitch, cpp, w, h, &region);
++	if (IS_ERR(fence)) {
++		dev_err_ratelimited(ocfb->drm.dev, "damage present failed\n");
++		return;
++	}
++	ocfb_wait_fence(ocfb, fence);
++	dma_fence_put(fence);
++	ocfb_vram_latch(ocfb, back, pitch * h);
++
++	partial = !(region.x1 <= 0 && region.y1 <= 0 &&
++		    region.x2 >= (int)w && region.y2 >= (int)h);
++	ocfb->dbg_present++;
++	ocfb->dbg_partial += partial;
++	ocfb->dbg_bytes += (u64)drm_rect_width(&region) * cpp * drm_rect_height(&region);
++}
++
++/* Stop and drain the deferred-damage worker (pipe disable / buffer change). */
++static void ocfb_damage_flush(struct ocfb_drm *ocfb)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&ocfb->damage_lock, flags);
++	ocfb->present_active = false;		/* stop the vsync IRQ re-queueing it */
++	ocfb->damage_pending = OCFB_RECT_NONE;
++	spin_unlock_irqrestore(&ocfb->damage_lock, flags);
++	cancel_work_sync(&ocfb->damage_work);
++}
++
+ static void ocfb_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 			     struct drm_crtc_state *crtc_state,
+ 			     struct drm_plane_state *plane_state)
+@@ -958,6 +1144,11 @@ static void ocfb_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 	if (ocfb->copy_on_flip) {
+ 		if (ocfb_vram_flip_sync(ocfb, fb, 0))
+ 			dev_err(ocfb->drm.dev, "initial flip copy failed\n");
++		/* slot 0 now holds the full frame; slot 1 is stale (owes everything) */
++		ocfb->slot_damage[0] = OCFB_RECT_NONE;
++		ocfb->slot_damage[1] = (struct drm_rect){ 0, 0, fb->width, fb->height };
++		ocfb->damage_pending = OCFB_RECT_NONE;
++		ocfb->present_active = false;
+ 	} else {
+ 		ocfb_set_scanout(ocfb, plane_state);
+ 	}
+@@ -977,8 +1168,17 @@ static void ocfb_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 	ocfb->ctrl = ctrl;
+ 	ocfb_wr(ocfb, OCFB_CTRL, ctrl);
+ 
+-	if (ocfb->irq > 0)
++	if (ocfb->irq > 0) {
+ 		drm_crtc_vblank_on(&pipe->crtc);
++		/*
++		 * Hold a vblank reference for the lifetime of the enabled pipe when
++		 * copy-on-flip is active, so the vsync IRQ keeps firing to drive the
++		 * deferred damage worker even when userspace is not page-flipping (the
++		 * IRQ no-ops while present_active is clear). Released in pipe_disable.
++		 */
++		if (ocfb->copy_on_flip)
++			drm_crtc_vblank_get(&pipe->crtc);
++	}
+ }
+ 
+ static enum drm_mode_status
+@@ -1014,6 +1214,9 @@ static void ocfb_pipe_disable(struct drm_simple_display_pipe *pipe)
+ 	 * stashed event and its vblank reference are not leaked.
+ 	 */
+ 	if (ocfb->copy_on_flip) {
++		/* stop the deferred damage worker before draining the engine */
++		ocfb_damage_flush(ocfb);
++
+ 		if (read_poll_timeout(ocfb_dma_rd, stat, stat & OCFB_DMA_STAT_IDLE,
+ 				      50, OCFB_DMA_TIMEOUT_US, false, ocfb,
+ 				      OCFB_DMA_STATUS))
+@@ -1035,8 +1238,11 @@ static void ocfb_pipe_disable(struct drm_simple_display_pipe *pipe)
+ 		spin_unlock_irq(&crtc->dev->event_lock);
+ 	}
+ 
+-	if (ocfb->irq > 0)
++	if (ocfb->irq > 0) {
++		if (ocfb->copy_on_flip)
++			drm_crtc_vblank_put(crtc);	/* release the persistent ref */
+ 		drm_crtc_vblank_off(crtc);
++	}
+ 
+ 	/* CTRL=0 clears VEN, which also gates the scanout read master. */
+ 	ocfb_wr(ocfb, OCFB_CTRL, 0);
+@@ -1058,19 +1264,36 @@ static void ocfb_pipe_update(struct drm_simple_display_pipe *pipe,
+ 	struct drm_crtc *crtc = &pipe->crtc;
+ 	struct drm_pending_vblank_event *event = crtc->state->event;
+ 	struct drm_framebuffer *fb = pipe->plane.state->fb;
++	/* same buffer as the previous update => in-place rendering (fbcon / X) */
++	bool inplace = old_state && old_state->fb && old_state->fb == fb;
+ 
+ 	/*
+-	 * Asynchronous copy-on-flip: kick the host->VRAM copy into the back
+-	 * buffer and hand the flip off to the DMA-done IRQ, which latches VBAR
+-	 * onto the freshly copied buffer and arms the flip event. The vblank
+-	 * reference is taken here (process context) and the event stashed; the
+-	 * IRQ arms it under event_lock. Returns without blocking the commit.
++	 * Asynchronous page flip to a new buffer: kick the full host->VRAM copy
++	 * into the back slot and hand the flip off to the DMA-done IRQ, which
++	 * latches VBAR and arms the flip event. The next flip waits for that event
++	 * (a vblank), so the slot this one leaves is free by then -- tear-free.
++	 * In-place damage has no such event and is handled by the deferred path.
+ 	 */
+-	if (ocfb->copy_on_flip && ocfb->dma_irq > 0 && fb) {
++	if (ocfb->copy_on_flip && ocfb->dma_irq > 0 && fb && !inplace) {
+ 		unsigned int next = ocfb->vram_cur ^ 1;
+ 		struct dma_fence *fence;
+ 		unsigned long flags;
+ 
++		ocfb_damage_flush(ocfb);	/* drain any in-place present from before */
++
++		/*
++		 * The full copy below makes @next current; the slot it leaves now holds
++		 * a whole stale frame. Seed the per-slot backlog so the first in-place
++		 * present after this flip refreshes that slot fully, instead of copying
++		 * only its small dirty rect onto stale content (would leave remnants of
++		 * the page-flipped frames). Mirrors the pipe_enable seeding.
++		 */
++		spin_lock_irqsave(&ocfb->damage_lock, flags);
++		ocfb->slot_damage[next] = OCFB_RECT_NONE;
++		ocfb->slot_damage[next ^ 1] =
++			(struct drm_rect){ 0, 0, fb->width, fb->height };
++		spin_unlock_irqrestore(&ocfb->damage_lock, flags);
++
+ 		/*
+ 		 * Kick the copy first -- ocfb_ring_submit runs in process context and
+ 		 * may sleep, so it cannot run under event_lock. The DMA-done IRQ can
+@@ -1105,15 +1328,42 @@ static void ocfb_pipe_update(struct drm_simple_display_pipe *pipe,
+ 		return;
+ 	}
+ 
+-	/*
+-	 * Synchronous copy-on-flip: copy into the back buffer and block on the
+-	 * fence before latching the scanout there. Direct scanout just latches
+-	 * the new host framebuffer base. Either way the hardware samples VBAR at
+-	 * the next start-of-frame, so the swap is tear-free, and the flip event
+-	 * is armed for that vblank below (sent immediately if vblank cannot be
+-	 * enabled, e.g. no IRQ wired).
+-	 */
+-	if (ocfb->copy_on_flip && fb) {
++	if (ocfb->copy_on_flip && ocfb->dma_irq > 0 && ocfb->irq > 0 && fb && inplace) {
++		/*
++		 * In-place damage: accumulate the dirty rect and snapshot the source,
++		 * then return immediately. The vsync IRQ drives the deferred worker,
++		 * which presents the coalesced damage once per frame -- so the many
++		 * small DIRTYFB updates X issues are never blocked or throttled.
++		 */
++		struct drm_gem_dma_object *gem = drm_fb_dma_get_gem_obj(fb, 0);
++		struct drm_rect dmg;
++		unsigned long flags;
++
++		if (!drm_atomic_helper_damage_merged(old_state, pipe->plane.state, &dmg))
++			dmg = (struct drm_rect){ 0, 0, fb->width, fb->height }; /* no clips */
++
++		if (ocfb->damage_log)
++			dev_info(ocfb->drm.dev,
++				 "DIRTYFB damage[%d,%d..%d,%d] (%dx%d) fb=%ux%u pitch=%u cpp=%u\n",
++				 dmg.x1, dmg.y1, dmg.x2, dmg.y2,
++				 drm_rect_width(&dmg), drm_rect_height(&dmg),
++				 fb->width, fb->height, fb->pitches[0], fb->format->cpp[0]);
++
++		spin_lock_irqsave(&ocfb->damage_lock, flags);
++		ocfb_rect_union(&ocfb->damage_pending, &dmg);
++		ocfb->damage_src     = lower_32_bits(gem->dma_addr - ocfb->vbar_offset);
++		ocfb->damage_pitch   = fb->pitches[0];
++		ocfb->damage_cpp     = fb->format->cpp[0];
++		ocfb->damage_w       = fb->width;
++		ocfb->damage_h       = fb->height;
++		ocfb->present_active = true;
++		ocfb->dbg_dirty++;
++		spin_unlock_irqrestore(&ocfb->damage_lock, flags);
++	} else if (ocfb->copy_on_flip && fb) {
++		/*
++		 * Fallback (no DMA IRQ, or no vsync IRQ to defer with): copy the whole
++		 * frame into the back slot and block on the fence before latching.
++		 */
+ 		if (ocfb_vram_flip_sync(ocfb, fb, ocfb->vram_cur ^ 1))
+ 			dev_err(ocfb->drm.dev, "flip copy failed; scanout unchanged\n");
+ 	} else {
+@@ -1235,6 +1485,13 @@ static int ocfb_modeset_init(struct ocfb_drm *ocfb)
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * Advertise per-plane damage clips so DIRTYFB / fbdev deferred-I/O carry the
++	 * dirty rectangle into the flip path, where copy-on-flip turns it into a
++	 * deferred coalesced partial copy. Harmless metadata with copy-on-flip off.
++	 */
++	drm_plane_enable_fb_damage_clips(&ocfb->pipe.plane);
++
+ 	/*
+ 	 * With a vsync IRQ wired we deliver real vblank events and
+ 	 * vblank-synchronised page flips; without one the atomic helper falls
+@@ -1322,6 +1579,9 @@ static int ocfb_dma_of_setup(struct ocfb_drm *ocfb, struct platform_device *pdev
+ 	INIT_LIST_HEAD(&ocfb->pending);
+ 	ocfb->fence_context = dma_fence_context_alloc(1);
+ 	ocfb->ring_tail = 0;
++	spin_lock_init(&ocfb->damage_lock);
++	INIT_WORK(&ocfb->damage_work, ocfb_damage_work);
++	ocfb->damage_pending = OCFB_RECT_NONE;
+ 
+ 	/*
+ 	 * Soft-reset (clears head/tail/fence/state), program the ring base and size
+@@ -1486,7 +1746,6 @@ static int ocfb_blit_selftest(struct ocfb_drm *ocfb)
+  */
+ #define OCFB_CT_PITCH	(1920 * 4)	/* 1080p scanout pitch (7680) */
+ #define OCFB_CT_SENTINEL 0x5a5a5a5au	/* FILL background; != 0 and != a pattern pixel */
+-#define OCFB_DMA_ALIGN	32		/* engine rounds a 2D row base down to a 256-bit beat */
+ 
+ /* position-encoded pixel for (x,y); 0xC0 tag marks it and makes it decodable */
+ static u32 ocfb_ct_pix(u32 x, u32 y)
+@@ -1719,6 +1978,44 @@ static const struct file_operations ocfb_stress_fops = {
+ 	.llseek  = default_llseek,
+ };
+ 
++/* Deferred-damage stats: confirm coalescing (dirty >> present) and partial copies. */
++static ssize_t ocfb_damage_read(struct file *f, char __user *ubuf,
++				size_t len, loff_t *ppos)
++{
++	struct ocfb_drm *ocfb = f->private_data;
++	char buf[160];
++	int n;
++
++	n = scnprintf(buf, sizeof(buf),
++		      "dirty=%llu present=%llu partial=%llu full=%llu bytes=%llu log=%u\n",
++		      ocfb->dbg_dirty, ocfb->dbg_present, ocfb->dbg_partial,
++		      ocfb->dbg_present - ocfb->dbg_partial, ocfb->dbg_bytes,
++		      ocfb->damage_log);
++	return simple_read_from_buffer(ubuf, len, ppos, buf, n);
++}
++
++/* write 0/1 to toggle verbose per-blit logging (the DIRTYFB damage + descriptor). */
++static ssize_t ocfb_damage_write(struct file *f, const char __user *ubuf,
++				 size_t len, loff_t *ppos)
++{
++	struct ocfb_drm *ocfb = f->private_data;
++	bool on;
++	int ret = kstrtobool_from_user(ubuf, len, &on);
++
++	if (ret)
++		return ret;
++	ocfb->damage_log = on;
++	return len;
++}
++
++static const struct file_operations ocfb_damage_fops = {
++	.owner   = THIS_MODULE,
++	.open    = simple_open,
++	.read    = ocfb_damage_read,
++	.write   = ocfb_damage_write,
++	.llseek  = default_llseek,
++};
++
+ static void ocfb_debugfs_init(struct ocfb_drm *ocfb)
+ {
+ 	struct dentry *root = ocfb->drm.primary->debugfs_root;
+@@ -1729,6 +2026,7 @@ static void ocfb_debugfs_init(struct ocfb_drm *ocfb)
+ 	debugfs_create_file("ocfb_copytest", 0200, root, ocfb, &ocfb_copytest_fops);
+ 	debugfs_create_file("ocfb_fill", 0200, root, ocfb, &ocfb_fill_fops);
+ 	debugfs_create_file("ocfb_blit_stress", 0200, root, ocfb, &ocfb_stress_fops);
++	debugfs_create_file("ocfb_damage", 0600, root, ocfb, &ocfb_damage_fops);
+ }
+ #else
+ static inline void ocfb_debugfs_init(struct ocfb_drm *ocfb) {}
+@@ -1846,6 +2144,8 @@ static void ocfb_remove(struct platform_device *pdev)
+ 		unsigned long flags;
+ 		LIST_HEAD(stragglers);
+ 
++		ocfb_damage_flush(ocfb);	/* no deferred present can still run */
++
+ 		/* mask IRQs and stop ring processing before devm frees ring + IRQ */
+ 		ocfb_dma_wr(ocfb, OCFB_DMA_IRQEN, 0);
+ 		ocfb_dma_wr(ocfb, OCFB_DMA_CTRL, 0);
+-- 
+2.40.1
+
