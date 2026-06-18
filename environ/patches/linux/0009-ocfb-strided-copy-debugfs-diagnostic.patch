@@ -1,0 +1,211 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Thu, 18 Jun 2026 21:00:00 +0200
+Subject: [PATCH] drm/tiny: ocfb: add strided-2D copy debugfs diagnostic
+
+Debug-only ocfb_copytest hook to localize copy-on-flip corruption, modelling
+the real X11 in-place damage pattern. FILL the whole off-screen frame with a
+sentinel (row by row, the geometry real fills use) and validate it on its own,
+then do two X11-window-sized partial COPY2D blits (host->VRAM: wide
+partial-width rows, beat-aligned base, byte tail) into two non-overlapping
+regions, CPU-reading the ENTIRE frame back through the HPS2FPGA path (same
+crossbar) and validating after each blit. This checks not only that each
+blitted rectangle is byte-correct, but that nothing outside it was touched --
+a stray beat landing where it was never written, or the second blit disturbing
+the first region, is caught and its location decoded; the standalone FILL check
+tells a FILL fault apart from a COPY2D fault. The host source is
+write-combining, matching GEM-DMA framebuffers. echo to
+/sys/kernel/debug/dri/0/ocfb_copytest; results in dmesg. CONFIG_DEBUG_FS-gated.
+---
+ drivers/gpu/drm/tiny/ocfb-drm.c | 154 ++++++++++++++++++++++++++++++++
+ 1 file changed, 154 insertions(+)
+
+diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
+index c7797c66..4223f80c 100644
+--- a/drivers/gpu/drm/tiny/ocfb-drm.c
++++ b/drivers/gpu/drm/tiny/ocfb-drm.c
+@@ -1474,6 +1474,143 @@ static int ocfb_blit_selftest(struct ocfb_drm *ocfb)
+ 	return bad ? -EIO : 0;
+ }
+ 
++/*
++ * Strided-2D copy diagnostic, modelling the real X11 damage pattern: FILL the
++ * whole frame with a sentinel, then do two partial COPY2D blits (host->VRAM,
++ * X11-window-sized: wide partial-width rows, beat-aligned base, tail) into two
++ * non-overlapping regions, validating the ENTIRE frame after each. This proves
++ * not just that the blitted rectangle is correct, but that nothing else was
++ * touched -- a stray beat landing outside the rectangle ("pixels in places they
++ * were never written") or the second blit disturbing the first region is caught.
++ * Read back through the HPS2FPGA path (same crossbar). CONFIG_DEBUG_FS only.
++ */
++#define OCFB_CT_PITCH	(1920 * 4)	/* 1080p scanout pitch (7680) */
++#define OCFB_CT_SENTINEL 0x5a5a5a5au	/* FILL background; != 0 and != a pattern pixel */
++#define OCFB_DMA_ALIGN	32		/* engine rounds a 2D row base down to a 256-bit beat */
++
++/* position-encoded pixel for (x,y); 0xC0 tag marks it and makes it decodable */
++static u32 ocfb_ct_pix(u32 x, u32 y)
++{
++	return 0xc0000000u | ((y & 0xff) << 16) | (x & 0xffff);
++}
++
++struct ocfb_ct_rect { u32 x1, y1, x2, y2; };	/* pixel coords, x2/y2 exclusive */
++
++/* Strided COPY2D of one region (beat-aligning the left edge, like the driver). */
++static int ocfb_ct_blit(struct ocfb_drm *ocfb, u32 src_base, u32 dst_base,
++			const struct ocfb_ct_rect *r)
++{
++	u32 xb  = (r->x1 * 4) & ~(OCFB_DMA_ALIGN - 1);
++	u32 off = r->y1 * OCFB_CT_PITCH + xb;
++
++	return ocfb_blit_sync(ocfb, OCFB_DMA_OP_COPY2D, src_base + off, dst_base + off,
++			      OCFB_CT_PITCH, OCFB_CT_PITCH, r->x2 * 4 - xb, r->y2 - r->y1);
++}
++
++static bool ocfb_ct_inrect(const struct ocfb_ct_rect *r, int n, u32 col, u32 row)
++{
++	int i;
++
++	for (i = 0; i < n; i++) {
++		u32 xc1 = ((r[i].x1 * 4) & ~(OCFB_DMA_ALIGN - 1)) / 4;	/* beat-aligned left */
++
++		if (col >= xc1 && col < r[i].x2 && row >= r[i].y1 && row < r[i].y2)
++			return true;
++	}
++	return false;
++}
++
++/*
++ * Validate the whole frame [0,@rows): every pixel inside an already-blitted
++ * region must hold its pattern; every other pixel must still be the sentinel.
++ * Reports region misses and stray writes (pollution) separately, with location.
++ */
++static u32 ocfb_ct_check(struct ocfb_drm *ocfb, void __iomem *vbuf, const char *tag,
++			 u32 rows, const struct ocfb_ct_rect *r, int n)
++{
++	u32 off, end = rows * OCFB_CT_PITCH, miss = 0, poll = 0;
++
++	rmb();
++	for (off = 0; off < end; off += 4) {
++		u32 row = off / OCFB_CT_PITCH;
++		u32 col = (off % OCFB_CT_PITCH) / 4;
++		bool in = ocfb_ct_inrect(r, n, col, row);
++		u32 exp = in ? ocfb_ct_pix(col, row) : OCFB_CT_SENTINEL;
++		u32 got = ioread32(vbuf + off);
++
++		if (got == exp)
++			continue;
++		if (in) {
++			if (++miss <= 8)
++				dev_err(ocfb->drm.dev, "copytest %s MISS (%u,%u): got %08x want %08x\n",
++					tag, col, row, got, exp);
++		} else if (++poll <= 8) {
++			dev_err(ocfb->drm.dev,
++				"copytest %s POLLUTION (%u,%u) off=%u: got %08x%s\n",
++				tag, col, row, off, got,
++				(got >> 24) == 0xc0 ? " (a copied pixel landed here)" : "");
++		}
++	}
++	dev_info(ocfb->drm.dev, "copytest %s: %s (%u region-miss, %u pollution over %u rows)\n",
++		 tag, (miss || poll) ? "FAIL" : "PASS", miss, poll, rows);
++	return miss + poll;
++}
++
++static int ocfb_copytest(struct ocfb_drm *ocfb)
++{
++	unsigned int slot = ocfb->vram_cur ^ 1;			/* off-screen */
++	u32 base = ocfb->vram_base + slot * ocfb->vram_slot;
++	void __iomem *vbuf = ocfb->vram + (size_t)slot * ocfb->vram_slot;
++	/* two X11-window-sized partial blits, non-overlapping, both with a tail */
++	const struct ocfb_ct_rect ab[2] = {
++		{ 311,   0, 1703,  96 },	/* A: w = 5596 B (tail), cols 304..1703 */
++		{ 600, 128, 1700, 224 },	/* B: w = 4400 B (tail), rows 128..224 */
++	};
++	const u32 rows = 256;					/* validate rows 0..255 */
++	u32 span = rows * OCFB_CT_PITCH;			/* host source + checked extent */
++	dma_addr_t hdma;
++	void *hbuf;
++	u32 hsrc, x, y, bad = 0;
++	int ret;
++
++	if ((size_t)span > ocfb->vram_slot)
++		return -EINVAL;
++
++	/* WC host source (like a GEM-DMA fb), position-encoded everywhere */
++	hbuf = dma_alloc_wc(ocfb->drm.dev, span, &hdma, GFP_KERNEL);
++	if (!hbuf)
++		return -ENOMEM;
++	hsrc = lower_32_bits(hdma - ocfb->vbar_offset);
++	for (y = 0; y < rows; y++)
++		for (x = 0; x < OCFB_CT_PITCH / 4; x++)
++			((u32 *)hbuf)[y * (OCFB_CT_PITCH / 4) + x] = ocfb_ct_pix(x, y);
++	wmb();
++
++	/* pre-fill the whole frame with the sentinel via the engine's FILL, row
++	 * by row (the geometry real fills use; also exercises the write master's
++	 * 4 KiB-boundary split), then validate the FILL on its own so a FILL
++	 * fault is told apart from the COPY2D faults checked below. */
++	ret = ocfb_blit_sync(ocfb, OCFB_DMA_OP_FILL, OCFB_CT_SENTINEL, base, 0,
++			     OCFB_CT_PITCH, OCFB_CT_PITCH, rows);
++	if (!ret)
++		bad += ocfb_ct_check(ocfb, vbuf, "after FILL", rows, ab, 0);
++
++	/* blit A, then validate the ENTIRE frame: only A changed, rest = sentinel */
++	if (!ret)
++		ret = ocfb_ct_blit(ocfb, hsrc, base, &ab[0]);
++	if (!ret)
++		bad += ocfb_ct_check(ocfb, vbuf, "after A", rows, ab, 1);
++
++	/* blit B, then validate: A still intact, B correct, nothing else touched */
++	if (!ret)
++		ret = ocfb_ct_blit(ocfb, hsrc, base, &ab[1]);
++	if (!ret)
++		bad += ocfb_ct_check(ocfb, vbuf, "after B", rows, ab, 2);
++
++	dma_free_wc(ocfb->drm.dev, span, hbuf, hdma);
++	return (ret || bad) ? -EIO : 0;
++}
++
+ static ssize_t ocfb_selftest_write(struct file *f, const char __user *ubuf,
+ 				   size_t len, loff_t *ppos)
+ {
+@@ -1483,6 +1620,15 @@ static ssize_t ocfb_selftest_write(struct file *f, const char __user *ubuf,
+ 	return ret ? ret : len;
+ }
+ 
++static ssize_t ocfb_copytest_write(struct file *f, const char __user *ubuf,
++				   size_t len, loff_t *ppos)
++{
++	struct ocfb_drm *ocfb = f->private_data;
++	int ret = ocfb_copytest(ocfb);
++
++	return ret ? ret : len;
++}
++
+ /* Visible FILL: write a 0xAARRGGBB color to fill the live scanout slot. */
+ static ssize_t ocfb_fill_write(struct file *f, const char __user *ubuf,
+ 			       size_t len, loff_t *ppos)
+@@ -1552,6 +1698,13 @@ static const struct file_operations ocfb_selftest_fops = {
+ 	.llseek  = default_llseek,
+ };
+ 
++static const struct file_operations ocfb_copytest_fops = {
++	.owner   = THIS_MODULE,
++	.open    = simple_open,
++	.write   = ocfb_copytest_write,
++	.llseek  = default_llseek,
++};
++
+ static const struct file_operations ocfb_fill_fops = {
+ 	.owner   = THIS_MODULE,
+ 	.open    = simple_open,
+@@ -1573,6 +1726,7 @@ static void ocfb_debugfs_init(struct ocfb_drm *ocfb)
+ 	if (!ocfb->copy_on_flip)		/* need the DMA engine + VRAM */
+ 		return;
+ 	debugfs_create_file("ocfb_selftest", 0200, root, ocfb, &ocfb_selftest_fops);
++	debugfs_create_file("ocfb_copytest", 0200, root, ocfb, &ocfb_copytest_fops);
+ 	debugfs_create_file("ocfb_fill", 0200, root, ocfb, &ocfb_fill_fops);
+ 	debugfs_create_file("ocfb_blit_stress", 0200, root, ocfb, &ocfb_stress_fops);
+ }
+-- 
+2.40.1
+
