@@ -1,0 +1,731 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Thu, 18 Jun 2026 14:00:00 +0200
+Subject: [PATCH] drm/tiny: ocfb: submit via the command ring with dma_fence
+ completion
+
+The command engine has always exposed an in-memory descriptor ring, but the
+driver drove it through the PIO descriptor registers: program SRC/DST/.../OP,
+ring the one-shot doorbell, and either busy-poll the FENCE register or resolve
+the flip from an ad-hoc flip_pending flag in the DMA-done IRQ. That is a
+one-op-at-a-time interface and gives callers no general completion primitive.
+
+Drive the engine through its hardware ring instead, and expose completion as
+struct dma_fence:
+
+  - Allocate a coherent 64-entry descriptor ring at probe, program RINGBASE
+    (translated into the read master's space by vbar-offset, like a COPY2D
+    source) / RINGSIZE, and enable the engine in ring mode. The PIO doorbell
+    is never written again (it would be prioritised over the ring and reorder).
+
+  - ocfb_ring_submit() writes a descriptor at the tail, advances RINGTAIL and
+    returns a dma_fence tagged with the descriptor's seqno. The engine drains
+    the ring in order and reports the last completed seqno in DMA_FENCE, so
+    fences complete in submission order; the DMA-done IRQ signals every pending
+    fence up to that value (coalescing completions). Comparisons use u32
+    signed-wrap arithmetic.
+
+  - The async flip stashes the copy's fence and resolves it (latch VBAR + arm
+    the vblank event) once it has signalled, keeping event_lock out of the
+    fence-signalling path. The synchronous flip and the debugfs bring-up blits
+    sleep on the fence instead of busy-polling; with no DMA-done IRQ wired they
+    fall back to polling DMA_FENCE and draining the completion list themselves.
+
+  - On unbind, mask the IRQ, stop ring processing and force-signal any in-flight
+    fences so no waiter is stranded before devm frees the ring.
+
+No functional change to copy-on-flip behaviour: this replaces the PIO
+submit/complete plumbing with the ring and a real completion fence, which the
+later damage-scoped copy and plane-composition phases build on.
+---
+ drivers/gpu/drm/tiny/ocfb-drm.c | 504 ++++++++++++++++++++++++--------
+ 1 file changed, 384 insertions(+), 120 deletions(-)
+
+diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
+index 3327b999..c7797c66 100644
+--- a/drivers/gpu/drm/tiny/ocfb-drm.c
++++ b/drivers/gpu/drm/tiny/ocfb-drm.c
+@@ -31,6 +31,7 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/debugfs.h>
++#include <linux/dma-fence.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+@@ -43,6 +44,7 @@
+ #include <linux/of_reserved_mem.h>
+ #include <linux/platform_device.h>
+ #include <linux/sizes.h>
++#include <linux/slab.h>
+ 
+ #include <drm/clients/drm_client_setup.h>
+ #include <drm/drm_atomic_helper.h>
+@@ -107,31 +109,39 @@
+ 
+ /*
+  * Optional companion DMA command engine CSRs (reg[2]) -- it copies a host
+- * framebuffer into device-local VRAM. These mirror the engine's hardware
+- * register interface. Only the PIO descriptor path is used (program the
+- * descriptor, then ring the doorbell); the in-memory command ring is left for
+- * a later phase.
++ * framebuffer into device-local VRAM and composites with FILL/BLEND. These
++ * mirror the engine's hardware register interface. Work is submitted through
++ * the in-memory command ring (RINGBASE/RINGSIZE/RINGTAIL/RINGHEAD): the driver
++ * writes a descriptor into the ring and advances the tail; the engine drains
++ * the ring in order and reports the last completed descriptor's seqno in
++ * DMA_FENCE. The PIO descriptor registers (SRC..DOORBELL) are a hardware debug
++ * path and are not used by the driver.
+  */
+ #define OCFB_DMA_ID		0x00	/* RO   identification */
+-#define OCFB_DMA_CTRL		0x04	/* RW   enable / soft-reset */
++#define OCFB_DMA_CTRL		0x04	/* RW   enable / soft-reset / ring-enable */
+ #define OCFB_DMA_STATUS		0x08	/* RO   busy / idle / error */
+ #define OCFB_DMA_IRQ		0x0c	/* RW1C interrupt status */
+ #define OCFB_DMA_IRQEN		0x10	/* RW   interrupt mask */
+-#define OCFB_DMA_SRC		0x20	/* RW   source byte address */
+-#define OCFB_DMA_DST		0x24	/* RW   destination byte address */
+-#define OCFB_DMA_SRCPITCH	0x28	/* RW   source row stride (bytes) */
+-#define OCFB_DMA_DSTPITCH	0x2c	/* RW   dest row stride (bytes) */
+-#define OCFB_DMA_WIDTH		0x30	/* RW   bytes per row */
+-#define OCFB_DMA_HEIGHT		0x34	/* RW   rows (1 => linear copy) */
+-#define OCFB_DMA_OP		0x38	/* RW   [7:0] opcode, [15:8] flags */
+-#define OCFB_DMA_DOORBELL	0x3c	/* WO   write seqno -> execute descriptor */
+-#define OCFB_DMA_FENCE		0x40	/* RO   last completed seqno */
++#define OCFB_DMA_SRC		0x20	/* RW   PIO source byte address (debug) */
++#define OCFB_DMA_DST		0x24	/* RW   PIO destination byte address (debug) */
++#define OCFB_DMA_SRCPITCH	0x28	/* RW   PIO source row stride (debug) */
++#define OCFB_DMA_DSTPITCH	0x2c	/* RW   PIO dest row stride (debug) */
++#define OCFB_DMA_WIDTH		0x30	/* RW   PIO bytes per row (debug) */
++#define OCFB_DMA_HEIGHT		0x34	/* RW   PIO rows (debug) */
++#define OCFB_DMA_OP		0x38	/* RW   PIO [7:0] opcode, [15:8] flags (debug) */
++#define OCFB_DMA_DOORBELL	0x3c	/* WO   PIO execute descriptor (debug) */
++#define OCFB_DMA_FENCE		0x40	/* RO   last completed seqno (monotonic) */
+ #define OCFB_DMA_ERR		0x44	/* RO   error info (resp / fault) */
++#define OCFB_DMA_RINGBASE	0x50	/* RW   ring base byte address */
++#define OCFB_DMA_RINGSIZE	0x54	/* RW   log2(ring entries) */
++#define OCFB_DMA_RINGTAIL	0x58	/* WO   producer doorbell (free-running tail) */
++#define OCFB_DMA_RINGHEAD	0x5c	/* RO   consumer index (free-running head) */
+ 
+ #define OCFB_DMA_IDENT		0x76430100 /* "vc" + version 1.0 */
+ 
+ #define OCFB_DMA_CTRL_ENABLE	0x00000001
+ #define OCFB_DMA_CTRL_RESET	0x00000002 /* soft reset, self-clearing */
++#define OCFB_DMA_CTRL_RINGEN	0x00000004 /* process the in-memory command ring */
+ 
+ #define OCFB_DMA_STAT_BUSY	0x00000001 /* a command is executing */
+ #define OCFB_DMA_STAT_IDLE	0x00000002 /* idle, no in-flight beats */
+@@ -142,11 +152,44 @@
+ 
+ #define OCFB_DMA_OP_COPY2D	0x01	/* 2D strided copy (height 1 => linear) */
+ #define OCFB_DMA_OP_FILL	0x02	/* solid fill: SRC = 32b ARGB color, replicated */
++#define OCFB_DMA_OP_FENCE	0x03	/* advance fence + IRQ, no data movement */
+ #define OCFB_DMA_OP_BLEND	0x04	/* premultiplied SRC_OVER: src OVER dst -> dst */
+ 
+ /* bound the wait for a copy to complete (a full 1080p frame is a few ms) */
+ #define OCFB_DMA_TIMEOUT_US	100000
+ 
++/*
++ * In-memory command ring: a power-of-two number of fixed 32-byte descriptors
++ * (one engine AXI beat each). 64 entries is far more than ever queues today
++ * (submitters serialise on their fence) and future-proofs batch submission.
++ */
++#define OCFB_RING_LOG2		6
++#define OCFB_RING_ENTRIES	(1u << OCFB_RING_LOG2)
++#define OCFB_RING_MASK		(OCFB_RING_ENTRIES - 1u)
++#define OCFB_DESC_WORDS		8
++#define OCFB_DESC_BYTES		(OCFB_DESC_WORDS * 4)	/* 32 B == one AXI beat */
++
++/*
++ * Descriptor word layout, matching dma_desc_t in the engine RTL. The engine
++ * reads descriptors from memory with its AXI data master (not the byte-swapped
++ * register bus), so words are stored in native little-endian order regardless
++ * of the register-bus byte order (ocfb->big_endian).
++ */
++enum {
++	OCFB_DW_OPFLAGS,	/* [7:0] opcode, [15:8] flags */
++	OCFB_DW_SEQNO,		/* fence value reported on completion */
++	OCFB_DW_SRC,		/* source byte address; FILL: 32b ARGB color */
++	OCFB_DW_DST,		/* destination byte address */
++	OCFB_DW_SRCPITCH,	/* source row stride (bytes) */
++	OCFB_DW_DSTPITCH,	/* dest row stride (bytes) */
++	OCFB_DW_WIDTH,		/* bytes per row */
++	OCFB_DW_HEIGHT,		/* rows (1 => linear) */
++};
++
++struct ocfb_desc {
++	__le32 w[OCFB_DESC_WORDS];
++};
++
+ struct ocfb_drm {
+ 	struct drm_device drm;
+ 	void __iomem *regs;
+@@ -180,11 +223,20 @@ struct ocfb_drm {
+ 	u32 vram_base;			/* scanout/DMA-master address of VRAM offset 0 */
+ 	u32 vram_slot;			/* per-buffer stride within VRAM (bytes) */
+ 	unsigned int vram_cur;		/* VRAM buffer currently scanned out (0/1) */
+-	u32 dma_seqno;			/* monotonic DMA fence seqno */
+-	struct mutex dma_lock;		/* serialises engine submit (flip + bring-up) */
++	u32 dma_seqno;			/* monotonic DMA fence seqno (next to assign) */
++	struct mutex dma_lock;		/* serialises ring producer + submit */
++	/* in-memory command ring (coherent host memory), drained in order */
++	void *ring;			/* CPU view of the descriptor ring */
++	dma_addr_t ring_dma;		/* bus address of the ring */
++	u32 ring_tail;			/* next free entry (free-running count) */
++	/* dma_fence completion: in-flight fences signalled from the DMA-done IRQ */
++	u64 fence_context;
++	spinlock_t fence_lock;		/* protects @pending and fence signalling */
++	struct list_head pending;	/* in-flight fences, FIFO by seqno */
+ 	struct task_struct *stress_task;/* debugfs blend-stress kthread, or NULL */
+ 	/* async flip hand-off: pipe_update arms it, the DMA-done IRQ resolves it */
+ 	struct drm_pending_vblank_event *flip_event;
++	struct dma_fence *flip_fence;	/* copy whose completion resolves the flip */
+ 	unsigned int flip_slot;
+ 	u32 flip_bytes;
+ 	bool flip_pending;
+@@ -542,54 +594,152 @@ static void ocfb_set_scanout(struct ocfb_drm *ocfb, struct drm_plane_state *stat
+ }
+ 
+ /*
+- * Submit a linear host->VRAM copy of @fb into VRAM scanout slot @slot through
+- * the DMA command engine, tagged with a fresh fence seqno (returned). The host
+- * buffer's CPU-physical DMA address is translated into the read master's space
+- * by vbar-offset (for a bus window that is not 1:1 with CPU-physical) exactly as
+- * the direct-scanout VBAR is. The whole framebuffer is copied as one linear run
+- * (height 1); the source
+- * and destination share the framebuffer's pitch, so the VRAM copy is byte-
+- * identical and the scanout PITCH/timing programming is unchanged.
++ * Completion fence. The engine reports the last completed descriptor's seqno in
++ * DMA_FENCE; a fence signals once that register has reached its seqno. seqno is
++ * a u32 written into the descriptor and stored in the u64 fence->seqno, so all
++ * comparisons are done in u32 space with signed wrap arithmetic.
+  */
+-static u32 ocfb_dma_submit(struct ocfb_drm *ocfb, struct drm_framebuffer *fb,
+-			   unsigned int slot)
++struct ocfb_fence {
++	struct dma_fence base;
++	struct ocfb_drm *ocfb;
++	struct list_head node;		/* on ocfb->pending */
++};
++
++static inline struct ocfb_fence *to_ocfb_fence(struct dma_fence *f)
+ {
+-	struct drm_gem_dma_object *gem = drm_fb_dma_get_gem_obj(fb, 0);
+-	u32 src = lower_32_bits(gem->dma_addr - ocfb->vbar_offset);
+-	u32 dst = ocfb->vram_base + slot * ocfb->vram_slot;
+-	u32 bytes = fb->pitches[0] * fb->height;
+-	u32 seqno;
+-	u32 st;
++	return container_of(f, struct ocfb_fence, base);
++}
++
++static const char *ocfb_fence_get_driver_name(struct dma_fence *f)
++{
++	return "ocfb-drm";
++}
++
++static const char *ocfb_fence_get_timeline_name(struct dma_fence *f)
++{
++	return "ocfb-dma";
++}
++
++static bool ocfb_fence_signaled(struct dma_fence *f)
++{
++	struct ocfb_fence *of = to_ocfb_fence(f);
++	u32 done = ocfb_dma_rd(of->ocfb, OCFB_DMA_FENCE);
++
++	return (s32)(done - (u32)f->seqno) >= 0;
++}
++
++static void ocfb_fence_release(struct dma_fence *f)
++{
++	struct ocfb_fence *of = to_ocfb_fence(f);
++
++	/* the signaller (or teardown) unlinks before the final put */
++	WARN_ON_ONCE(!list_empty(&of->node));
++	kfree_rcu(of, base.rcu);
++}
++
++static const struct dma_fence_ops ocfb_fence_ops = {
++	.get_driver_name   = ocfb_fence_get_driver_name,
++	.get_timeline_name = ocfb_fence_get_timeline_name,
++	.signaled          = ocfb_fence_signaled,
++	.release           = ocfb_fence_release,
++};
++
++/*
++ * Submit one command descriptor through the in-memory ring and return a
++ * dma_fence that signals when the engine completes it (caller owns one ref,
++ * dma_fence_put when done; ERR_PTR on failure). All engine work -- copy-on-flip
++ * and the debugfs bring-up ops -- goes through here; the engine drains the ring
++ * in order, so fences complete in submission order. Process context only
++ * (kzalloc, mutex, possibly sleeping ring-full wait).
++ */
++static struct dma_fence *ocfb_ring_submit(struct ocfb_drm *ocfb, u32 op,
++					  u32 src, u32 dst, u32 spitch,
++					  u32 dpitch, u32 width, u32 height)
++{
++	struct ocfb_fence *of;
++	struct ocfb_desc *d;
++	unsigned long flags;
++	u32 seqno, head;
++
++	of = kzalloc(sizeof(*of), GFP_KERNEL);
++	if (!of)
++		return ERR_PTR(-ENOMEM);
++	of->ocfb = ocfb;
++	INIT_LIST_HEAD(&of->node);
++
++	mutex_lock(&ocfb->dma_lock);
+ 
+ 	/*
+-	 * dma_lock serialises against any other engine submitter (the debugfs
+-	 * bring-up path): it stops two submitters from interleaving the seqno,
+-	 * descriptor registers and doorbell. The doorbell is a one-shot pulse the
+-	 * engine only latches while idle, so one rung while a previous command is
+-	 * still in flight is silently dropped and its fence never advances. Atomic
+-	 * commits are serialised per-CRTC, but a modeset's initial copy can race an
+-	 * async flip from the outgoing client that is still settling (an fbcon
+-	 * deferred-I/O flush, or the previous DRM master), so wait for idle inside
+-	 * the lock before kicking.
++	 * Wait for a free ring slot. Submitters serialise on their fence today, so
++	 * the ring never actually fills; the guard future-proofs batch submission.
+ 	 */
+-	mutex_lock(&ocfb->dma_lock);
++	if (read_poll_timeout(ocfb_dma_rd, head,
++			      (u32)(ocfb->ring_tail - head) < OCFB_RING_ENTRIES,
++			      20, OCFB_DMA_TIMEOUT_US, false,
++			      ocfb, OCFB_DMA_RINGHEAD)) {
++		mutex_unlock(&ocfb->dma_lock);
++		dev_err(ocfb->drm.dev, "command ring full (tail=%u head=%u)\n",
++			ocfb->ring_tail, ocfb_dma_rd(ocfb, OCFB_DMA_RINGHEAD));
++		kfree(of);
++		return ERR_PTR(-EBUSY);
++	}
++
+ 	seqno = ++ocfb->dma_seqno;
+-	if (read_poll_timeout(ocfb_dma_rd, st, st & OCFB_DMA_STAT_IDLE, 10,
+-			      OCFB_DMA_TIMEOUT_US, false, ocfb, OCFB_DMA_STATUS))
+-		dev_warn(ocfb->drm.dev, "DMA not idle before submit (status=0x%08x)\n",
+-			 st);
+-
+-	ocfb_dma_wr(ocfb, OCFB_DMA_SRC, src);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_DST, dst);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_SRCPITCH, bytes);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_DSTPITCH, bytes);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_WIDTH, bytes);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_HEIGHT, 1);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_OP, OCFB_DMA_OP_COPY2D);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_DOORBELL, seqno);	/* kick */
++	if (!seqno)			/* 0 is DMA_FENCE's reset / "none done" value */
++		seqno = ++ocfb->dma_seqno;
++	dma_fence_init(&of->base, &ocfb_fence_ops, &ocfb->fence_lock,
++		       ocfb->fence_context, seqno);
++
++	d = (struct ocfb_desc *)ocfb->ring + (ocfb->ring_tail & OCFB_RING_MASK);
++	d->w[OCFB_DW_OPFLAGS]  = cpu_to_le32(op);
++	d->w[OCFB_DW_SEQNO]    = cpu_to_le32(seqno);
++	d->w[OCFB_DW_SRC]      = cpu_to_le32(src);
++	d->w[OCFB_DW_DST]      = cpu_to_le32(dst);
++	d->w[OCFB_DW_SRCPITCH] = cpu_to_le32(spitch);
++	d->w[OCFB_DW_DSTPITCH] = cpu_to_le32(dpitch);
++	d->w[OCFB_DW_WIDTH]    = cpu_to_le32(width);
++	d->w[OCFB_DW_HEIGHT]   = cpu_to_le32(height);
++
++	/* publish the descriptor before the tail doorbell the engine fetches on */
++	dma_wmb();
++
++	/*
++	 * Put the fence on the pending list (with its own ref) before the doorbell:
++	 * the DMA-done IRQ can fire before this call even returns, and must always
++	 * find the fence to signal.
++	 */
++	dma_fence_get(&of->base);
++	spin_lock_irqsave(&ocfb->fence_lock, flags);
++	list_add_tail(&of->node, &ocfb->pending);
++	spin_unlock_irqrestore(&ocfb->fence_lock, flags);
++
++	ocfb->ring_tail++;
++	ocfb_dma_wr(ocfb, OCFB_DMA_RINGTAIL, ocfb->ring_tail);
++
+ 	mutex_unlock(&ocfb->dma_lock);
+ 
+-	return seqno;
++	return &of->base;
++}
++
++/*
++ * Submit the copy-on-flip COPY2D of @fb into VRAM slot @slot; return its fence.
++ * The host buffer's CPU-physical DMA address is translated into the read
++ * master's space by vbar-offset exactly as the direct-scanout VBAR is. The
++ * whole framebuffer is copied as one linear run (height 1) at the framebuffer
++ * pitch, so the VRAM copy is byte-identical and the scanout PITCH/timing
++ * programming is unchanged.
++ */
++static struct dma_fence *ocfb_flip_submit(struct ocfb_drm *ocfb,
++					  struct drm_framebuffer *fb,
++					  unsigned int slot)
++{
++	struct drm_gem_dma_object *gem = drm_fb_dma_get_gem_obj(fb, 0);
++	u32 src = lower_32_bits(gem->dma_addr - ocfb->vbar_offset);
++	u32 dst = ocfb->vram_base + slot * ocfb->vram_slot;
++	u32 bytes = fb->pitches[0] * fb->height;
++
++	return ocfb_ring_submit(ocfb, OCFB_DMA_OP_COPY2D, src, dst,
++				bytes, bytes, bytes, 1);
+ }
+ 
+ /*
+@@ -603,25 +753,65 @@ static void ocfb_vram_latch(struct ocfb_drm *ocfb, unsigned int slot, u32 bytes)
+ 	ocfb->vram_cur = slot;
+ }
+ 
+-/* Block until the DMA fence reaches @seqno (synchronous flip path). */
+-static int ocfb_dma_wait(struct ocfb_drm *ocfb, u32 seqno)
++/*
++ * Signal every in-flight fence the engine has completed. Reads the last
++ * completed seqno once and signals all pending fences up to it; the engine
++ * completes in submission order, so the list is ordered and we stop at the
++ * first not-done entry. Collects under fence_lock, then signals after dropping
++ * it (dma_fence_signal takes fence_lock itself). Callable from the DMA-done IRQ
++ * and the no-IRQ poll fallback.
++ */
++static void ocfb_dma_signal_completed(struct ocfb_drm *ocfb)
+ {
+-	struct device *dev = ocfb->drm.dev;
+-	u32 val;
++	u32 done = ocfb_dma_rd(ocfb, OCFB_DMA_FENCE);
++	struct ocfb_fence *of, *tmp;
++	unsigned long flags;
++	LIST_HEAD(signal);
+ 
+-	if (read_poll_timeout(ocfb_dma_rd, val, val == seqno, 20,
+-			      OCFB_DMA_TIMEOUT_US, false, ocfb, OCFB_DMA_FENCE)) {
+-		dev_err(dev, "DMA copy timed out (fence=%u want=%u status=0x%08x err=0x%08x)\n",
+-			val, seqno, ocfb_dma_rd(ocfb, OCFB_DMA_STATUS),
+-			ocfb_dma_rd(ocfb, OCFB_DMA_ERR));
+-		return -ETIMEDOUT;
++	spin_lock_irqsave(&ocfb->fence_lock, flags);
++	list_for_each_entry_safe(of, tmp, &ocfb->pending, node) {
++		if ((s32)(done - (u32)of->base.seqno) < 0)
++			break;
++		list_move_tail(&of->node, &signal);
+ 	}
+-	if (ocfb_dma_rd(ocfb, OCFB_DMA_STATUS) & OCFB_DMA_STAT_ERROR) {
+-		dev_err(dev, "DMA copy faulted (err=0x%08x)\n",
+-			ocfb_dma_rd(ocfb, OCFB_DMA_ERR));
+-		return -EIO;
++	spin_unlock_irqrestore(&ocfb->fence_lock, flags);
++
++	list_for_each_entry_safe(of, tmp, &signal, node) {
++		list_del_init(&of->node);
++		dma_fence_signal(&of->base);
++		dma_fence_put(&of->base);	/* drop the pending list's ref */
+ 	}
+-	return 0;
++}
++
++/*
++ * Block until @fence signals. With the DMA-done IRQ wired the fence is signalled
++ * there, so sleep on it; without the IRQ nobody else signals, so poll DMA_FENCE
++ * and run the completion drain ourselves.
++ */
++static int ocfb_wait_fence(struct ocfb_drm *ocfb, struct dma_fence *fence)
++{
++	if (ocfb->dma_irq > 0) {
++		long left = dma_fence_wait_timeout(fence, false,
++					usecs_to_jiffies(OCFB_DMA_TIMEOUT_US));
++
++		if (left > 0)
++			return 0;
++	} else {
++		u32 done;
++
++		if (!read_poll_timeout(ocfb_dma_rd, done,
++				       (s32)(done - (u32)fence->seqno) >= 0, 20,
++				       OCFB_DMA_TIMEOUT_US, false,
++				       ocfb, OCFB_DMA_FENCE)) {
++			ocfb_dma_signal_completed(ocfb);
++			return 0;
++		}
++	}
++
++	dev_err(ocfb->drm.dev, "DMA wait timed out (seqno=%u fence=%u status=0x%08x err=0x%08x)\n",
++		(u32)fence->seqno, ocfb_dma_rd(ocfb, OCFB_DMA_FENCE),
++		ocfb_dma_rd(ocfb, OCFB_DMA_STATUS), ocfb_dma_rd(ocfb, OCFB_DMA_ERR));
++	return -ETIMEDOUT;
+ }
+ 
+ /*
+@@ -633,9 +823,14 @@ static int ocfb_vram_flip_sync(struct ocfb_drm *ocfb, struct drm_framebuffer *fb
+ 			       unsigned int slot)
+ {
+ 	u32 bytes = fb->pitches[0] * fb->height;
+-	u32 seqno = ocfb_dma_submit(ocfb, fb, slot);
+-	int ret = ocfb_dma_wait(ocfb, seqno);
++	struct dma_fence *fence = ocfb_flip_submit(ocfb, fb, slot);
++	int ret;
+ 
++	if (IS_ERR(fence))
++		return PTR_ERR(fence);
++
++	ret = ocfb_wait_fence(ocfb, fence);
++	dma_fence_put(fence);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -644,39 +839,52 @@ static int ocfb_vram_flip_sync(struct ocfb_drm *ocfb, struct drm_framebuffer *fb
+ }
+ 
+ /*
+- * DMA-done interrupt (asynchronous flip path only). Raised when a copy
+- * completes; latch the scanout base onto the buffer it filled and arm the
+- * page-flip event for the next start-of-frame, where the hardware samples VBAR
+- * and the vsync handler then delivers the event. On a faulted copy the scanout
+- * base is left unchanged (the previous frame keeps showing) but the event is
+- * still armed so userspace is not stranded.
++ * Resolve a pending async flip once its copy fence has signalled: latch the
++ * scanout base onto the freshly copied buffer and arm the page-flip event for
++ * the next start-of-frame, where the hardware samples VBAR and the vsync
++ * handler then delivers the event. Caller must not hold event_lock. Idempotent
++ * and safe to call when no flip is pending.
+  */
+-static irqreturn_t ocfb_dma_irq_handler(int irq, void *arg)
++static void ocfb_flip_resolve(struct ocfb_drm *ocfb)
+ {
+-	struct ocfb_drm *ocfb = arg;
+ 	struct drm_crtc *crtc = &ocfb->pipe.crtc;
+-	u32 stat = ocfb_dma_rd(ocfb, OCFB_DMA_IRQ);
+ 	unsigned long flags;
+ 
+-	if (!(stat & (OCFB_DMA_IRQ_DONE | OCFB_DMA_IRQ_ERROR)))
+-		return IRQ_NONE;
+-
+-	ocfb_dma_wr(ocfb, OCFB_DMA_IRQ, stat);		/* W1C */
+-
+ 	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+-	if (ocfb->flip_pending) {
+-		if (!(stat & OCFB_DMA_IRQ_ERROR))
+-			ocfb_vram_latch(ocfb, ocfb->flip_slot, ocfb->flip_bytes);
++	if (ocfb->flip_pending && ocfb->flip_fence &&
++	    dma_fence_is_signaled(ocfb->flip_fence)) {
++		ocfb_vram_latch(ocfb, ocfb->flip_slot, ocfb->flip_bytes);
+ 		if (ocfb->flip_event) {
+ 			drm_crtc_arm_vblank_event(crtc, ocfb->flip_event);
+ 			ocfb->flip_event = NULL;
+ 		}
++		dma_fence_put(ocfb->flip_fence);
++		ocfb->flip_fence = NULL;
+ 		ocfb->flip_pending = false;
+ 	}
+ 	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
++}
++
++/*
++ * DMA-done interrupt. Signal every fence the engine has completed (draining the
++ * ring's completed tail), then resolve a pending async flip if its copy fence
++ * is now among them.
++ */
++static irqreturn_t ocfb_dma_irq_handler(int irq, void *arg)
++{
++	struct ocfb_drm *ocfb = arg;
++	u32 stat = ocfb_dma_rd(ocfb, OCFB_DMA_IRQ);
++
++	if (!(stat & (OCFB_DMA_IRQ_DONE | OCFB_DMA_IRQ_ERROR)))
++		return IRQ_NONE;
++
++	ocfb_dma_wr(ocfb, OCFB_DMA_IRQ, stat);		/* W1C */
++
++	ocfb_dma_signal_completed(ocfb);
++	ocfb_flip_resolve(ocfb);
+ 
+ 	if (stat & OCFB_DMA_IRQ_ERROR)
+-		dev_err_ratelimited(ocfb->drm.dev, "DMA flip faulted (err=0x%08x)\n",
++		dev_err_ratelimited(ocfb->drm.dev, "DMA op faulted (err=0x%08x)\n",
+ 				    ocfb_dma_rd(ocfb, OCFB_DMA_ERR));
+ 
+ 	return IRQ_HANDLED;
+@@ -818,6 +1026,10 @@ static void ocfb_pipe_disable(struct drm_simple_display_pipe *pipe)
+ 				drm_crtc_vblank_put(crtc);
+ 				ocfb->flip_event = NULL;
+ 			}
++			if (ocfb->flip_fence) {
++				dma_fence_put(ocfb->flip_fence);
++				ocfb->flip_fence = NULL;
++			}
+ 			ocfb->flip_pending = false;
+ 		}
+ 		spin_unlock_irq(&crtc->dev->event_lock);
+@@ -856,10 +1068,24 @@ static void ocfb_pipe_update(struct drm_simple_display_pipe *pipe,
+ 	 */
+ 	if (ocfb->copy_on_flip && ocfb->dma_irq > 0 && fb) {
+ 		unsigned int next = ocfb->vram_cur ^ 1;
++		struct dma_fence *fence;
+ 		unsigned long flags;
+ 
++		/*
++		 * Kick the copy first -- ocfb_ring_submit runs in process context and
++		 * may sleep, so it cannot run under event_lock. The DMA-done IRQ can
++		 * fire (and find no pending flip) before we stash the fence below; the
++		 * ocfb_flip_resolve() afterwards closes that race when the copy has
++		 * already completed.
++		 */
++		fence = ocfb_flip_submit(ocfb, fb, next);
++		if (IS_ERR(fence)) {
++			dev_err(ocfb->drm.dev, "flip submit failed; scanout unchanged\n");
++			fence = NULL;
++		}
++
+ 		spin_lock_irqsave(&crtc->dev->event_lock, flags);
+-		if (event && crtc->state->active &&
++		if (event && fence && crtc->state->active &&
+ 		    drm_crtc_vblank_get(crtc) == 0) {
+ 			ocfb->flip_event = event;
+ 		} else if (event) {
+@@ -869,10 +1095,13 @@ static void ocfb_pipe_update(struct drm_simple_display_pipe *pipe,
+ 		crtc->state->event = NULL;
+ 		ocfb->flip_slot = next;
+ 		ocfb->flip_bytes = fb->pitches[0] * fb->height;
+-		ocfb->flip_pending = true;
++		ocfb->flip_fence = fence;	/* transfers the submit ref */
++		ocfb->flip_pending = fence != NULL;
+ 		spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+ 
+-		ocfb_dma_submit(ocfb, fb, next);
++		/* close the race where the copy completed before the stash above */
++		if (fence)
++			ocfb_flip_resolve(ocfb);
+ 		return;
+ 	}
+ 
+@@ -1077,16 +1306,40 @@ static int ocfb_dma_of_setup(struct ocfb_drm *ocfb, struct platform_device *pdev
+ 		dev_warn(dev, "unexpected DMA engine id 0x%08x (want 0x%08x)\n",
+ 			 id, OCFB_DMA_IDENT);
+ 
+-	/* soft-reset, enable the engine, drop any stale IRQ, mask IRQs for now. */
++	/*
++	 * Command ring in host memory, fetched by the engine's read master, so its
++	 * base is translated into that master's space by vbar-offset just like a
++	 * COPY2D source. dmam_alloc_coherent is page-aligned (>= the 32-byte
++	 * descriptor alignment) and, under the 32-bit DMA mask, lands below 4 GiB.
++	 */
++	ocfb->ring = dmam_alloc_coherent(dev, OCFB_RING_ENTRIES * OCFB_DESC_BYTES,
++					 &ocfb->ring_dma, GFP_KERNEL);
++	if (!ocfb->ring)
++		return dev_err_probe(dev, -ENOMEM, "cannot allocate command ring\n");
++
++	mutex_init(&ocfb->dma_lock);
++	spin_lock_init(&ocfb->fence_lock);
++	INIT_LIST_HEAD(&ocfb->pending);
++	ocfb->fence_context = dma_fence_context_alloc(1);
++	ocfb->ring_tail = 0;
++
++	/*
++	 * Soft-reset (clears head/tail/fence/state), program the ring base and size
++	 * while the engine is disabled, drop any stale IRQ, then enable the engine
++	 * in ring mode. From here all work is submitted through the ring; the PIO
++	 * doorbell is never used (it would be prioritised over the ring and reorder).
++	 */
+ 	ocfb_dma_wr(ocfb, OCFB_DMA_CTRL, OCFB_DMA_CTRL_RESET);
+-	ocfb_dma_wr(ocfb, OCFB_DMA_CTRL, OCFB_DMA_CTRL_ENABLE);
++	ocfb_dma_wr(ocfb, OCFB_DMA_RINGBASE,
++		    lower_32_bits(ocfb->ring_dma - ocfb->vbar_offset));
++	ocfb_dma_wr(ocfb, OCFB_DMA_RINGSIZE, OCFB_RING_LOG2);
+ 	ocfb_dma_wr(ocfb, OCFB_DMA_IRQ, OCFB_DMA_IRQ_DONE | OCFB_DMA_IRQ_ERROR);
+ 	ocfb_dma_wr(ocfb, OCFB_DMA_IRQEN, 0);
++	ocfb_dma_wr(ocfb, OCFB_DMA_CTRL, OCFB_DMA_CTRL_ENABLE | OCFB_DMA_CTRL_RINGEN);
+ 
+-	/* clear VRAM so nothing stale is ever scanned out, and exercise the path */
++	/* clear VRAM so nothing stale is ever scanned out */
+ 	memset_io(ocfb->vram, 0, (size_t)ocfb->vram_slot * 2);
+ 
+-	mutex_init(&ocfb->dma_lock);
+ 	ocfb->copy_on_flip = true;
+ 
+ 	/*
+@@ -1127,33 +1380,21 @@ static int ocfb_dma_of_setup(struct ocfb_drm *ocfb, struct platform_device *pdev
+  * engine with the flip path -- run them while the display is quiescent.
+  */
+ 
+-/* Synchronous arbitrary blit: program one descriptor, ring it, block on fence. */
++/* Synchronous arbitrary blit: submit one descriptor and block on its fence. */
+ static int ocfb_blit_sync(struct ocfb_drm *ocfb, u32 op,
+ 			  u32 src, u32 dst, u32 spitch, u32 dpitch,
+ 			  u32 width, u32 height)
+ {
+-	u32 seqno;
+-	u32 st;
+-	int ret = 0;
++	struct dma_fence *fence = ocfb_ring_submit(ocfb, op, src, dst, spitch,
++						   dpitch, width, height);
++	int ret;
+ 
+-	mutex_lock(&ocfb->dma_lock);
+-	seqno = ++ocfb->dma_seqno;
+-	if (read_poll_timeout(ocfb_dma_rd, st, st & OCFB_DMA_STAT_IDLE, 10,
+-			      OCFB_DMA_TIMEOUT_US, false, ocfb, OCFB_DMA_STATUS)) {
+-		ret = -EBUSY;
+-	} else {
+-		ocfb_dma_wr(ocfb, OCFB_DMA_SRC, src);
+-		ocfb_dma_wr(ocfb, OCFB_DMA_DST, dst);
+-		ocfb_dma_wr(ocfb, OCFB_DMA_SRCPITCH, spitch);
+-		ocfb_dma_wr(ocfb, OCFB_DMA_DSTPITCH, dpitch);
+-		ocfb_dma_wr(ocfb, OCFB_DMA_WIDTH, width);
+-		ocfb_dma_wr(ocfb, OCFB_DMA_HEIGHT, height);
+-		ocfb_dma_wr(ocfb, OCFB_DMA_OP, op);
+-		ocfb_dma_wr(ocfb, OCFB_DMA_DOORBELL, seqno);
+-	}
+-	mutex_unlock(&ocfb->dma_lock);
++	if (IS_ERR(fence))
++		return PTR_ERR(fence);
+ 
+-	return ret ? ret : ocfb_dma_wait(ocfb, seqno);
++	ret = ocfb_wait_fence(ocfb, fence);
++	dma_fence_put(fence);
++	return ret;
+ }
+ 
+ /* Software reference for premultiplied SRC_OVER -- must match vctrl_dma_blend. */
+@@ -1436,15 +1677,38 @@ static int ocfb_probe(struct platform_device *pdev)
+ static void ocfb_remove(struct platform_device *pdev)
+ {
+ 	struct drm_device *drm = platform_get_drvdata(pdev);
+-#if defined(CONFIG_DEBUG_FS)
+ 	struct ocfb_drm *ocfb = drm_to_ocfb(drm);
+ 
++#if defined(CONFIG_DEBUG_FS)
+ 	if (ocfb->stress_task)
+ 		kthread_stop(ocfb->stress_task);
+ #endif
+ 
+ 	drm_dev_unregister(drm);
+ 	drm_atomic_helper_shutdown(drm);
++
++	if (ocfb->dma_regs) {
++		struct ocfb_fence *of, *tmp;
++		unsigned long flags;
++		LIST_HEAD(stragglers);
++
++		/* mask IRQs and stop ring processing before devm frees ring + IRQ */
++		ocfb_dma_wr(ocfb, OCFB_DMA_IRQEN, 0);
++		ocfb_dma_wr(ocfb, OCFB_DMA_CTRL, 0);
++
++		/* signal what actually completed, then force-signal any stragglers
++		 * so no waiter is stranded and no late IRQ touches freed state */
++		ocfb_dma_signal_completed(ocfb);
++		spin_lock_irqsave(&ocfb->fence_lock, flags);
++		list_splice_init(&ocfb->pending, &stragglers);
++		spin_unlock_irqrestore(&ocfb->fence_lock, flags);
++		list_for_each_entry_safe(of, tmp, &stragglers, node) {
++			list_del_init(&of->node);
++			dma_fence_set_error(&of->base, -ENODEV);
++			dma_fence_signal(&of->base);
++			dma_fence_put(&of->base);
++		}
++	}
+ }
+ 
+ static void ocfb_shutdown(struct platform_device *pdev)
+-- 
+2.40.1
+
