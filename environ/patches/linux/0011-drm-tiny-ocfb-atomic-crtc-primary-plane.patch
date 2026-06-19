@@ -1,0 +1,428 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Fri, 19 Jun 2026 09:00:00 +0200
+Subject: [PATCH] drm/tiny: ocfb: convert to a full atomic CRTC + primary plane
+
+drm_simple_display_pipe is a shim over the atomic crtc/plane helpers and only
+exposes the single primary plane, which blocks adding cursor/overlay planes
+later. Inline the shim: split the pipe into an explicit drm_crtc, a primary
+drm_plane, a drm_encoder and the existing connector, relocating the callback
+bodies unchanged. No functional change.
+
+- The pipe callbacks move verbatim into the new funcs: mode_valid/enable/disable
+  -> crtc_helper_funcs (mode_valid/atomic_enable/atomic_disable); check/update ->
+  plane_helper_funcs (atomic_check/atomic_update); enable_vblank/disable_vblank ->
+  crtc_funcs. A new crtc atomic_check mirrors what drm_simple_display_pipe did
+  internally (check_crtc_primary_plane when enabled + add_affected_planes).
+  prepare_fb = drm_gem_plane_helper_prepare_fb; crtc/plane state via the default
+  atomic helpers (no new per-object state).
+- The flip event is still armed by the plane atomic_update / the DMA-done IRQ
+  resolve; there is deliberately no crtc atomic_flush (which would double-arm).
+- All &pipe.crtc / &pipe.plane sites retarget to &ocfb->crtc / &ocfb->primary
+  (vblank handling, flip resolve, damage clips, the vsync IRQ handler).
+
+Structural prerequisite for driver-side plane composition; adds no planes and no
+behaviour of its own.
+---
+ drivers/gpu/drm/tiny/ocfb-drm.c | 200 ++++++++++++++++++++++++--------
+ 1 file changed, 149 insertions(+), 51 deletions(-)
+
+diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
+index d6b02c4a..0143dcd9 100644
+--- a/drivers/gpu/drm/tiny/ocfb-drm.c
++++ b/drivers/gpu/drm/tiny/ocfb-drm.c
+@@ -12,7 +12,7 @@
+  * The hardware is a single-plane scanout engine: an AXI master DMA-reads a
+  * contiguous framebuffer and drives an RGB/HDMI output with programmable
+  * display timing. There is no overlay, cursor or acceleration, so it maps
+- * onto drm_simple_display_pipe + GEM-DMA, with fbdev emulation bringing the
++ * onto a full atomic CRTC + GEM-DMA, with fbdev emulation bringing the
+  * console back.
+  *
+  * An optional companion DMA command engine enables "copy-on-flip": userspace
+@@ -48,24 +48,28 @@
+ #include <linux/workqueue.h>
+ 
+ #include <drm/clients/drm_client_setup.h>
++#include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_connector.h>
++#include <drm/drm_crtc.h>
+ #include <drm/drm_damage_helper.h>
+ #include <drm/drm_device.h>
+ #include <drm/drm_drv.h>
+ #include <drm/drm_edid.h>
++#include <drm/drm_encoder.h>
+ #include <drm/drm_fb_dma_helper.h>
+ #include <drm/drm_fbdev_dma.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_framebuffer.h>
++#include <drm/drm_gem_atomic_helper.h>
+ #include <drm/drm_gem_dma_helper.h>
+ #include <drm/drm_gem_framebuffer_helper.h>
+ #include <drm/drm_managed.h>
+ #include <drm/drm_modes.h>
+ #include <drm/drm_module.h>
++#include <drm/drm_plane.h>
+ #include <drm/drm_probe_helper.h>
+ #include <drm/drm_rect.h>
+-#include <drm/drm_simple_kms_helper.h>
+ #include <drm/drm_vblank.h>
+ 
+ /* OCFB register map (subset; the OpenCores VGA/LCD core defines the rest) */
+@@ -273,12 +277,13 @@ struct ocfb_drm {
+ 	u64 dbg_present;		/* presents performed */
+ 	u64 dbg_partial;		/* presents that were partial (vs full) */
+ 	u64 dbg_bytes;			/* total bytes copied by presents */
+-	struct drm_simple_display_pipe pipe;
++	struct drm_plane primary;
++	struct drm_crtc crtc;
++	struct drm_encoder encoder;
+ 	struct drm_connector connector;
+ };
+ 
+ #define drm_to_ocfb(d)	container_of(d, struct ocfb_drm, drm)
+-#define pipe_to_ocfb(p)	container_of(p, struct ocfb_drm, pipe)
+ 
+ static inline u32 ocfb_rd(struct ocfb_drm *ocfb, u32 off)
+ {
+@@ -936,7 +941,7 @@ static int ocfb_vram_flip_sync(struct ocfb_drm *ocfb, struct drm_framebuffer *fb
+  */
+ static void ocfb_flip_resolve(struct ocfb_drm *ocfb)
+ {
+-	struct drm_crtc *crtc = &ocfb->pipe.crtc;
++	struct drm_crtc *crtc = &ocfb->crtc;
+ 	unsigned long flags;
+ 
+ 	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+@@ -982,7 +987,7 @@ static irqreturn_t ocfb_dma_irq_handler(int irq, void *arg)
+ /*
+  * The core raises this once per frame at start-of-vblank (the same instant the
+  * scanout base is latched in hardware). Acknowledge it and run the vblank
+- * handler, which sends any page-flip event armed by ocfb_pipe_update().
++ * handler, which sends any page-flip event armed by ocfb_plane_atomic_update().
+  */
+ static irqreturn_t ocfb_irq_handler(int irq, void *arg)
+ {
+@@ -992,7 +997,7 @@ static irqreturn_t ocfb_irq_handler(int irq, void *arg)
+ 		return IRQ_NONE;
+ 
+ 	ocfb_wr(ocfb, OCFB_STAT, OCFB_STAT_VINT);	/* W1C */
+-	drm_crtc_handle_vblank(&ocfb->pipe.crtc);
++	drm_crtc_handle_vblank(&ocfb->crtc);
+ 
+ 	/*
+ 	 * Run a deferred damage present just after this SOF: the slot the SOF just
+@@ -1010,7 +1015,7 @@ static irqreturn_t ocfb_irq_handler(int irq, void *arg)
+  * Deferred damage present, queued by the vsync IRQ so it runs just after a SOF.
+  * The slot the SOF just freed (vram_cur ^ 1) is now safe to write; copy the
+  * coalesced damage -- plus that slot's backlog, since it is one generation stale
+- * -- from the snapshot ocfb_pipe_update took, wait the copy, then latch it
++ * -- from the snapshot ocfb_plane_atomic_update took, wait the copy, then latch it
+  * (adopted tear-free at the next SOF). Coalesces every DIRTYFB since the last
+  * present, so X is never throttled. Keeps running until both slots are current.
+  */
+@@ -1094,11 +1099,14 @@ static void ocfb_damage_flush(struct ocfb_drm *ocfb)
+ 	cancel_work_sync(&ocfb->damage_work);
+ }
+ 
+-static void ocfb_pipe_enable(struct drm_simple_display_pipe *pipe,
+-			     struct drm_crtc_state *crtc_state,
+-			     struct drm_plane_state *plane_state)
++static void ocfb_crtc_atomic_enable(struct drm_crtc *crtc,
++				    struct drm_atomic_state *state)
+ {
+-	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++	struct ocfb_drm *ocfb = drm_to_ocfb(crtc->dev);
++	struct drm_crtc_state *crtc_state =
++		drm_atomic_get_new_crtc_state(state, crtc);
++	struct drm_plane_state *plane_state =
++		drm_atomic_get_new_plane_state(state, &ocfb->primary);
+ 	struct drm_display_mode *m = &crtc_state->adjusted_mode;
+ 	struct drm_framebuffer *fb = plane_state->fb;
+ 	u32 hsw, hbp, vsw, vbp, ctrl;
+@@ -1169,23 +1177,22 @@ static void ocfb_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 	ocfb_wr(ocfb, OCFB_CTRL, ctrl);
+ 
+ 	if (ocfb->irq > 0) {
+-		drm_crtc_vblank_on(&pipe->crtc);
++		drm_crtc_vblank_on(crtc);
+ 		/*
+-		 * Hold a vblank reference for the lifetime of the enabled pipe when
++		 * Hold a vblank reference for the lifetime of the enabled crtc when
+ 		 * copy-on-flip is active, so the vsync IRQ keeps firing to drive the
+ 		 * deferred damage worker even when userspace is not page-flipping (the
+-		 * IRQ no-ops while present_active is clear). Released in pipe_disable.
++		 * IRQ no-ops while present_active is clear). Released in atomic_disable.
+ 		 */
+ 		if (ocfb->copy_on_flip)
+-			drm_crtc_vblank_get(&pipe->crtc);
++			drm_crtc_vblank_get(crtc);
+ 	}
+ }
+ 
+ static enum drm_mode_status
+-ocfb_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
+-		     const struct drm_display_mode *mode)
++ocfb_crtc_mode_valid(struct drm_crtc *crtc, const struct drm_display_mode *mode)
+ {
+-	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++	struct ocfb_drm *ocfb = drm_to_ocfb(crtc->dev);
+ 	unsigned long target = (unsigned long)mode->clock * 1000;
+ 	unsigned long fout;
+ 	u16 m, n, c;
+@@ -1202,10 +1209,10 @@ ocfb_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
+ 	return MODE_OK;
+ }
+ 
+-static void ocfb_pipe_disable(struct drm_simple_display_pipe *pipe)
++static void ocfb_crtc_atomic_disable(struct drm_crtc *crtc,
++				     struct drm_atomic_state *state)
+ {
+-	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
+-	struct drm_crtc *crtc = &pipe->crtc;
++	struct ocfb_drm *ocfb = drm_to_ocfb(crtc->dev);
+ 	u32 stat;
+ 
+ 	/*
+@@ -1257,13 +1264,17 @@ static void ocfb_pipe_disable(struct drm_simple_display_pipe *pipe)
+ 		dev_warn(ocfb->drm.dev, "scanout fetch did not drain on disable\n");
+ }
+ 
+-static void ocfb_pipe_update(struct drm_simple_display_pipe *pipe,
+-			     struct drm_plane_state *old_state)
++static void ocfb_plane_atomic_update(struct drm_plane *plane,
++				     struct drm_atomic_state *state)
+ {
+-	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
+-	struct drm_crtc *crtc = &pipe->crtc;
++	struct ocfb_drm *ocfb = drm_to_ocfb(plane->dev);
++	struct drm_crtc *crtc = &ocfb->crtc;
++	struct drm_plane_state *old_state =
++		drm_atomic_get_old_plane_state(state, plane);
++	struct drm_plane_state *new_state =
++		drm_atomic_get_new_plane_state(state, plane);
+ 	struct drm_pending_vblank_event *event = crtc->state->event;
+-	struct drm_framebuffer *fb = pipe->plane.state->fb;
++	struct drm_framebuffer *fb = new_state->fb;
+ 	/* same buffer as the previous update => in-place rendering (fbcon / X) */
+ 	bool inplace = old_state && old_state->fb && old_state->fb == fb;
+ 
+@@ -1339,7 +1350,7 @@ static void ocfb_pipe_update(struct drm_simple_display_pipe *pipe,
+ 		struct drm_rect dmg;
+ 		unsigned long flags;
+ 
+-		if (!drm_atomic_helper_damage_merged(old_state, pipe->plane.state, &dmg))
++		if (!drm_atomic_helper_damage_merged(old_state, new_state, &dmg))
+ 			dmg = (struct drm_rect){ 0, 0, fb->width, fb->height }; /* no clips */
+ 
+ 		if (ocfb->damage_log)
+@@ -1367,7 +1378,7 @@ static void ocfb_pipe_update(struct drm_simple_display_pipe *pipe,
+ 		if (ocfb_vram_flip_sync(ocfb, fb, ocfb->vram_cur ^ 1))
+ 			dev_err(ocfb->drm.dev, "flip copy failed; scanout unchanged\n");
+ 	} else {
+-		ocfb_set_scanout(ocfb, pipe->plane.state);
++		ocfb_set_scanout(ocfb, new_state);
+ 	}
+ 
+ 	if (event) {
+@@ -1382,9 +1393,9 @@ static void ocfb_pipe_update(struct drm_simple_display_pipe *pipe,
+ }
+ 
+ /* Unmask/mask the vsync interrupt by toggling VIE on the cached control word. */
+-static int ocfb_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
++static int ocfb_crtc_enable_vblank(struct drm_crtc *crtc)
+ {
+-	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++	struct ocfb_drm *ocfb = drm_to_ocfb(crtc->dev);
+ 
+ 	ocfb_wr(ocfb, OCFB_STAT, OCFB_STAT_VINT);	/* drop a stale request */
+ 	ocfb_wr(ocfb, OCFB_CTRL, ocfb->ctrl | OCFB_CTRL_VIE);
+@@ -1392,9 +1403,9 @@ static int ocfb_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
+ 	return 0;
+ }
+ 
+-static void ocfb_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
++static void ocfb_crtc_disable_vblank(struct drm_crtc *crtc)
+ {
+-	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++	struct ocfb_drm *ocfb = drm_to_ocfb(crtc->dev);
+ 
+ 	ocfb_wr(ocfb, OCFB_CTRL, ocfb->ctrl);
+ }
+@@ -1404,12 +1415,27 @@ static void ocfb_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
+  * slot, so reject any framebuffer that would not fit (it would otherwise spill
+  * into the other buffer). Direct scanout has no such bound.
+  */
+-static int ocfb_pipe_check(struct drm_simple_display_pipe *pipe,
+-			   struct drm_plane_state *plane_state,
+-			   struct drm_crtc_state *crtc_state)
++static int ocfb_plane_atomic_check(struct drm_plane *plane,
++				   struct drm_atomic_state *state)
+ {
+-	struct ocfb_drm *ocfb = pipe_to_ocfb(pipe);
++	struct ocfb_drm *ocfb = drm_to_ocfb(plane->dev);
++	struct drm_plane_state *plane_state =
++		drm_atomic_get_new_plane_state(state, plane);
++	struct drm_crtc_state *crtc_state =
++		drm_atomic_get_new_crtc_state(state, &ocfb->crtc);
+ 	struct drm_framebuffer *fb = plane_state->fb;
++	int ret;
++
++	/* primary fills the crtc: no scaling, no positioning (engine has no scaler) */
++	ret = drm_atomic_helper_check_plane_state(plane_state, crtc_state,
++						  DRM_PLANE_NO_SCALING,
++						  DRM_PLANE_NO_SCALING,
++						  false, false);
++	if (ret)
++		return ret;
++
++	if (!plane_state->visible)
++		return 0;
+ 
+ 	if (ocfb->copy_on_flip && fb &&
+ 	    (size_t)fb->pitches[0] * fb->height > ocfb->vram_slot)
+@@ -1418,21 +1444,69 @@ static int ocfb_pipe_check(struct drm_simple_display_pipe *pipe,
+ 	return 0;
+ }
+ 
+-static const struct drm_simple_display_pipe_funcs ocfb_pipe_funcs = {
+-	.mode_valid = ocfb_pipe_mode_valid,
+-	.check = ocfb_pipe_check,
+-	.enable = ocfb_pipe_enable,
+-	.disable = ocfb_pipe_disable,
+-	.update = ocfb_pipe_update,
+-	.enable_vblank = ocfb_pipe_enable_vblank,
+-	.disable_vblank = ocfb_pipe_disable_vblank,
++/*
++ * Mirror what drm_simple_display_pipe did internally: when the crtc is enabled,
++ * validate the primary plane covers it, and pull the (single) plane into the
++ * commit so its check/update run on a crtc-only commit (modeset / helper flip).
++ */
++static int ocfb_crtc_atomic_check(struct drm_crtc *crtc,
++				  struct drm_atomic_state *state)
++{
++	struct drm_crtc_state *crtc_state =
++		drm_atomic_get_new_crtc_state(state, crtc);
++	int ret;
++
++	if (crtc_state->enable) {
++		ret = drm_atomic_helper_check_crtc_primary_plane(crtc_state);
++		if (ret)
++			return ret;
++	}
++
++	return drm_atomic_add_affected_planes(state, crtc);
++}
++
++static const struct drm_crtc_helper_funcs ocfb_crtc_helper_funcs = {
++	.mode_valid	= ocfb_crtc_mode_valid,
++	.atomic_check	= ocfb_crtc_atomic_check,
++	.atomic_enable	= ocfb_crtc_atomic_enable,
++	.atomic_disable	= ocfb_crtc_atomic_disable,
++};
++
++static const struct drm_crtc_funcs ocfb_crtc_funcs = {
++	.reset			= drm_atomic_helper_crtc_reset,
++	.destroy		= drm_crtc_cleanup,
++	.set_config		= drm_atomic_helper_set_config,
++	.page_flip		= drm_atomic_helper_page_flip,
++	.atomic_duplicate_state	= drm_atomic_helper_crtc_duplicate_state,
++	.atomic_destroy_state	= drm_atomic_helper_crtc_destroy_state,
++	.enable_vblank		= ocfb_crtc_enable_vblank,
++	.disable_vblank		= ocfb_crtc_disable_vblank,
++};
++
++static const struct drm_plane_helper_funcs ocfb_plane_helper_funcs = {
++	.prepare_fb	= drm_gem_plane_helper_prepare_fb,
++	.atomic_check	= ocfb_plane_atomic_check,
++	.atomic_update	= ocfb_plane_atomic_update,
++};
++
++static const struct drm_plane_funcs ocfb_plane_funcs = {
++	.update_plane		= drm_atomic_helper_update_plane,
++	.disable_plane		= drm_atomic_helper_disable_plane,
++	.destroy		= drm_plane_cleanup,
++	.reset			= drm_atomic_helper_plane_reset,
++	.atomic_duplicate_state	= drm_atomic_helper_plane_duplicate_state,
++	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,
++};
++
++static const struct drm_encoder_funcs ocfb_encoder_funcs = {
++	.destroy = drm_encoder_cleanup,
+ };
+ 
+ /*
+  * Use the dirty-tracking framebuffer create: it attaches a ->dirty handler
+  * (drm_atomic_helper_dirtyfb) so a DIRTYFB ioctl -- and the fbcon console,
+  * whose deferred-I/O flushes take the shadowed fbdev path and call ->dirty --
+- * turn into an atomic update that runs ocfb_pipe_update(). Copy-on-flip shows a
++ * turn into an atomic update that runs ocfb_plane_atomic_update(). Copy-on-flip shows a
+  * snapshot taken at that commit, so without it in-place rendering would not be
+  * copied to VRAM and stay invisible until the next page flip. (Harmless for
+  * direct scanout, where the framebuffer is scanned out in place.)
+@@ -1472,6 +1546,32 @@ static int ocfb_modeset_init(struct ocfb_drm *ocfb)
+ 	drm->mode_config.max_height = 1200;
+ 	drm->mode_config.funcs = &ocfb_mode_config_funcs;
+ 
++	/*
++	 * Full atomic pipeline: primary plane -> crtc -> encoder -> connector.
++	 * (Previously a drm_simple_display_pipe, which is itself a shim over these
++	 * same helpers; inlined here so extra planes can be added later.) The
++	 * embedded objects use the non-managed drm_*_init: drmm_mode_config_init
++	 * above registers drm_mode_config_cleanup, which tears them all down.
++	 */
++	drm_plane_helper_add(&ocfb->primary, &ocfb_plane_helper_funcs);
++	ret = drm_universal_plane_init(drm, &ocfb->primary, 0, &ocfb_plane_funcs,
++				       ocfb_formats, ARRAY_SIZE(ocfb_formats),
++				       NULL, DRM_PLANE_TYPE_PRIMARY, NULL);
++	if (ret)
++		return ret;
++
++	drm_crtc_helper_add(&ocfb->crtc, &ocfb_crtc_helper_funcs);
++	ret = drm_crtc_init_with_planes(drm, &ocfb->crtc, &ocfb->primary, NULL,
++					&ocfb_crtc_funcs, NULL);
++	if (ret)
++		return ret;
++
++	ocfb->encoder.possible_crtcs = drm_crtc_mask(&ocfb->crtc);
++	ret = drm_encoder_init(drm, &ocfb->encoder, &ocfb_encoder_funcs,
++			       DRM_MODE_ENCODER_NONE, NULL);
++	if (ret)
++		return ret;
++
+ 	drm_connector_helper_add(&ocfb->connector,
+ 				 &ocfb_connector_helper_funcs);
+ 	ret = drm_connector_init(drm, &ocfb->connector, &ocfb_connector_funcs,
+@@ -1479,9 +1579,7 @@ static int ocfb_modeset_init(struct ocfb_drm *ocfb)
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = drm_simple_display_pipe_init(drm, &ocfb->pipe, &ocfb_pipe_funcs,
+-					   ocfb_formats, ARRAY_SIZE(ocfb_formats),
+-					   NULL, &ocfb->connector);
++	ret = drm_connector_attach_encoder(&ocfb->connector, &ocfb->encoder);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -1490,7 +1588,7 @@ static int ocfb_modeset_init(struct ocfb_drm *ocfb)
+ 	 * dirty rectangle into the flip path, where copy-on-flip turns it into a
+ 	 * deferred coalesced partial copy. Harmless metadata with copy-on-flip off.
+ 	 */
+-	drm_plane_enable_fb_damage_clips(&ocfb->pipe.plane);
++	drm_plane_enable_fb_damage_clips(&ocfb->primary);
+ 
+ 	/*
+ 	 * With a vsync IRQ wired we deliver real vblank events and
+@@ -1513,7 +1611,7 @@ static int ocfb_modeset_init(struct ocfb_drm *ocfb)
+  * engine (reg[2]) and a VRAM aperture (reg[1]), each flip DMA-copies the host
+  * framebuffer into device-local VRAM and scanout reads from there; absent, the
+  * driver keeps the original direct host-scanout behaviour (copy_on_flip stays
+- * false). Must run after ocfb_modeset_init() so the pipe is initialised before
++ * false). Must run after ocfb_modeset_init() so the crtc/planes are initialised before
+  * the DMA-done IRQ, which touches the CRTC, can be requested.
+  */
+ static int ocfb_dma_of_setup(struct ocfb_drm *ocfb, struct platform_device *pdev)
+-- 
+2.40.1
+
