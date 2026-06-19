@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Fri, 19 Jun 2026 14:00:00 +0200
+Subject: [PATCH] drm/tiny: ocfb: advertise ARGB8888 + the LINEAR modifier on
+ the primary plane
+
+GBM/EGL clients commonly pick an ARGB8888 EGL config (8-bit alpha) and wrap
+their buffers with drmModeAddFB2WithModifiers, which the kernel rejects with
+-EINVAL unless some plane advertises the exact (format, modifier) pair. The
+primary advertised only XRGB8888 and no explicit modifier, so such clients
+(glmark2-drm, and the GBM path a Wayland compositor takes) could not create a
+framebuffer and presented nothing.
+
+Add DRM_FORMAT_ARGB8888 to the primary's formats -- the scanout reads 32-bit
+pixels and ignores the alpha byte, so ARGB8888 is byte-identical to XRGB8888
+for an opaque primary (CTRL colour depth CD32) -- and advertise the
+DRM_FORMAT_MOD_LINEAR modifier (the only layout the scanout reads), so
+AddFB2WithModifiers accepts these buffers.
+---
+ drivers/gpu/drm/tiny/ocfb-drm.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
+index 0143dcd9..b22c2e24 100644
+--- a/drivers/gpu/drm/tiny/ocfb-drm.c
++++ b/drivers/gpu/drm/tiny/ocfb-drm.c
+@@ -531,9 +531,19 @@ static u32 ocfb_ctrl_color_depth(u32 fourcc)
+ 
+ static const u32 ocfb_formats[] = {
+ 	DRM_FORMAT_XRGB8888,
++	DRM_FORMAT_ARGB8888,	/* scanned out opaque: the alpha byte is ignored, == XRGB */
+ 	DRM_FORMAT_RGB565,
+ };
+ 
++/* The scanout reads linear buffers only. Advertising the modifier explicitly
++ * (rather than leaving it implicit) lets GBM/EGL clients wrap their buffers
++ * with drmModeAddFB2WithModifiers, which checks a plane supports the
++ * (format, modifier) pair -- the path mesa takes for ARGB8888 surfaces. */
++static const u64 ocfb_format_modifiers[] = {
++	DRM_FORMAT_MOD_LINEAR,
++	DRM_FORMAT_MOD_INVALID,
++};
++
+ /*
+  * Fixed mode list. The output drives a dumb HDMI transmitter with no
+  * DDC/EDID, so rather than the generic drm_add_modes_noedid() table (whose
+@@ -1556,7 +1566,8 @@ static int ocfb_modeset_init(struct ocfb_drm *ocfb)
+ 	drm_plane_helper_add(&ocfb->primary, &ocfb_plane_helper_funcs);
+ 	ret = drm_universal_plane_init(drm, &ocfb->primary, 0, &ocfb_plane_funcs,
+ 				       ocfb_formats, ARRAY_SIZE(ocfb_formats),
+-				       NULL, DRM_PLANE_TYPE_PRIMARY, NULL);
++				       ocfb_format_modifiers, DRM_PLANE_TYPE_PRIMARY,
++				       NULL);
+ 	if (ret)
+ 		return ret;
+ 
+-- 
+2.40.1
+
