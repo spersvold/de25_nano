@@ -1,0 +1,320 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Steffen Persvold <spersvold@gmail.com>
+Date: Fri, 19 Jun 2026 17:00:00 +0200
+Subject: [PATCH] drm/tiny: ocfb: add a hardware cursor plane composited via
+ BLEND
+
+Expose a DRM_PLANE_TYPE_CURSOR plane and composite it over the primary with the
+engine's premultiplied SRC_OVER BLEND into the off-screen VRAM slot, so X11 and
+Wayland get a hardware cursor (legacy SetCursor/MoveCursor route here via
+drm_mode_cursor_universal) without recompositing the whole frame on every move.
+
+The cursor shares the deferred-damage worker: a cursor update unions its old and
+new rect into the damage region (so the primary is restored under the move) and
+snapshots the cursor (fb, clipped dst, source crop, visibility) under
+damage_lock; the worker, after copying the primary into the back slot, BLENDs
+the cursor on top, then latches. The engine realigns the source to the cursor's
+arbitrary destination X (the vctrl_dma source realigner), so the kernel blends
+straight from the cursor fb -- no pre-shift, no scratch. The snapshot holds an
+fb reference so the cursor GEM survives the deferred present; the worker takes
+its own reference for the blend. The primary source is tracked at enable and on
+every primary update so a cursor present always has a frame to restore under it.
+
+atomic_check forbids scaling (no scaler), allows free positioning (including
+partially off-screen), and rejects a visible cursor when copy-on-flip is off
+(no engine -> userspace uses a software cursor). cursor_width/height = 256;
+ARGB8888 + LINEAR only.
+---
+ drivers/gpu/drm/tiny/ocfb-drm.c | 200 +++++++++++++++++++++++++++++++-
+ 1 file changed, 197 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/tiny/ocfb-drm.c b/drivers/gpu/drm/tiny/ocfb-drm.c
+index b22c2e24..4a663b33 100644
+--- a/drivers/gpu/drm/tiny/ocfb-drm.c
++++ b/drivers/gpu/drm/tiny/ocfb-drm.c
+@@ -277,7 +277,19 @@ struct ocfb_drm {
+ 	u64 dbg_present;		/* presents performed */
+ 	u64 dbg_partial;		/* presents that were partial (vs full) */
+ 	u64 dbg_bytes;			/* total bytes copied by presents */
++	/*
++	 * Hardware cursor plane, composited over the primary with a premultiplied
++	 * SRC_OVER BLEND into the back slot. The cursor state is snapshotted here
++	 * (under damage_lock) so the deferred worker can blend it without touching
++	 * live plane state; cur_fb holds a reference so the cursor GEM stays alive
++	 * across the deferred present even if userspace swaps the cursor.
++	 */
++	struct drm_framebuffer *cur_fb;	/* cursor source fb (ref held); NULL = none */
++	struct drm_rect cur_dst;	/* clipped on-screen cursor rect (pixels) */
++	u32 cur_srcx, cur_srcy;		/* source crop origin when clipped (pixels) */
++	bool cur_visible;
+ 	struct drm_plane primary;
++	struct drm_plane cursor;
+ 	struct drm_crtc crtc;
+ 	struct drm_encoder encoder;
+ 	struct drm_connector connector;
+@@ -544,6 +556,11 @@ static const u64 ocfb_format_modifiers[] = {
+ 	DRM_FORMAT_MOD_INVALID,
+ };
+ 
++/* the cursor plane is premultiplied ARGB8888 (the DRM cursor convention) */
++static const u32 ocfb_cursor_formats[] = {
++	DRM_FORMAT_ARGB8888,
++};
++
+ /*
+  * Fixed mode list. The output drives a dumb HDMI transmitter with no
+  * DDC/EDID, so rather than the generic drm_add_modes_noedid() table (whose
+@@ -1038,6 +1055,11 @@ static void ocfb_damage_work(struct work_struct *work)
+ 	unsigned int back;
+ 	unsigned long flags;
+ 	bool partial;
++	/* cursor snapshot (taken under the same lock as the primary) */
++	struct drm_framebuffer *cfb;
++	struct drm_rect cdst;
++	u32 csrcx, csrcy;
++	bool cvis;
+ 
+ 	spin_lock_irqsave(&ocfb->damage_lock, flags);
+ 	back  = ocfb->vram_cur ^ 1;
+@@ -1076,18 +1098,61 @@ static void ocfb_damage_work(struct work_struct *work)
+ 	if (!drm_rect_visible(&ocfb->slot_damage[0]) &&
+ 	    !drm_rect_visible(&ocfb->slot_damage[1]))
+ 		ocfb->present_active = false;		/* both slots current after this */
++	/* snapshot the cursor; hold an fb ref so its GEM survives the present */
++	cvis  = ocfb->cur_visible;
++	cfb   = ocfb->cur_fb;
++	if (cfb)
++		drm_framebuffer_get(cfb);
++	cdst  = ocfb->cur_dst;
++	csrcx = ocfb->cur_srcx;
++	csrcy = ocfb->cur_srcy;
+ 	spin_unlock_irqrestore(&ocfb->damage_lock, flags);
+ 
+-	if (!drm_rect_visible(&region))			/* spurious wake / already drained */
++	if (!drm_rect_visible(&region)) {		/* spurious wake / already drained */
++		if (cfb)
++			drm_framebuffer_put(cfb);
+ 		return;
++	}
+ 
+ 	fence = ocfb_copy_region(ocfb, src, back, pitch, cpp, w, h, &region);
+ 	if (IS_ERR(fence)) {
+ 		dev_err_ratelimited(ocfb->drm.dev, "damage present failed\n");
++		if (cfb)
++			drm_framebuffer_put(cfb);
+ 		return;
+ 	}
+ 	ocfb_wait_fence(ocfb, fence);
+ 	dma_fence_put(fence);
++
++	/*
++	 * Composite the cursor over the freshly copied primary in the back slot.
++	 * The primary copy above already restored the primary under both the old
++	 * and new cursor rects (they are unioned into the damage region), so this
++	 * BLEND just lays the cursor on top. The engine realigns the source to the
++	 * cursor's arbitrary destination X (vctrl_dma_realign); the in-order ring
++	 * guarantees the COPY retires before this BLEND RMWs the slot.
++	 */
++	if (cvis && cfb) {
++		struct drm_gem_dma_object *cg = drm_fb_dma_get_gem_obj(cfb, 0);
++		u32 cpitch = cfb->pitches[0];
++		u32 csrc   = lower_32_bits(cg->dma_addr - ocfb->vbar_offset) +
++			     csrcy * cpitch + csrcx * 4;
++		u32 cdstb  = ocfb->vram_base + back * ocfb->vram_slot +
++			     cdst.y1 * pitch + cdst.x1 * 4;
++		struct dma_fence *cf = ocfb_ring_submit(ocfb, OCFB_DMA_OP_BLEND,
++				csrc, cdstb, cpitch, pitch,
++				drm_rect_width(&cdst) * 4, drm_rect_height(&cdst));
++
++		if (!IS_ERR(cf)) {
++			ocfb_wait_fence(ocfb, cf);
++			dma_fence_put(cf);
++		} else {
++			dev_err_ratelimited(ocfb->drm.dev, "cursor blend failed\n");
++		}
++	}
++	if (cfb)
++		drm_framebuffer_put(cfb);
++
+ 	ocfb_vram_latch(ocfb, back, pitch * h);
+ 
+ 	partial = !(region.x1 <= 0 && region.y1 <= 0 &&
+@@ -1167,6 +1232,14 @@ static void ocfb_crtc_atomic_enable(struct drm_crtc *crtc,
+ 		ocfb->slot_damage[1] = (struct drm_rect){ 0, 0, fb->width, fb->height };
+ 		ocfb->damage_pending = OCFB_RECT_NONE;
+ 		ocfb->present_active = false;
++		/* seed the primary source so a cursor present before the first
++		 * DIRTYFB still has a frame to restore under the cursor */
++		ocfb->damage_src   = lower_32_bits(drm_fb_dma_get_gem_obj(fb, 0)->dma_addr -
++						   ocfb->vbar_offset);
++		ocfb->damage_pitch = fb->pitches[0];
++		ocfb->damage_cpp   = fb->format->cpp[0];
++		ocfb->damage_w     = fb->width;
++		ocfb->damage_h     = fb->height;
+ 	} else {
+ 		ocfb_set_scanout(ocfb, plane_state);
+ 	}
+@@ -1313,6 +1386,13 @@ static void ocfb_plane_atomic_update(struct drm_plane *plane,
+ 		ocfb->slot_damage[next] = OCFB_RECT_NONE;
+ 		ocfb->slot_damage[next ^ 1] =
+ 			(struct drm_rect){ 0, 0, fb->width, fb->height };
++		/* track the new primary source so a later cursor present restores it */
++		ocfb->damage_src   = lower_32_bits(drm_fb_dma_get_gem_obj(fb, 0)->dma_addr -
++						   ocfb->vbar_offset);
++		ocfb->damage_pitch = fb->pitches[0];
++		ocfb->damage_cpp   = fb->format->cpp[0];
++		ocfb->damage_w     = fb->width;
++		ocfb->damage_h     = fb->height;
+ 		spin_unlock_irqrestore(&ocfb->damage_lock, flags);
+ 
+ 		/*
+@@ -1508,6 +1588,105 @@ static const struct drm_plane_funcs ocfb_plane_funcs = {
+ 	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,
+ };
+ 
++/*
++ * Cursor plane. The driver composites it over the primary with the engine's
++ * premultiplied SRC_OVER BLEND, so it shares the deferred-damage worker: an
++ * update accumulates the old+new rect into the damage region (so the primary
++ * is restored under the move) and snapshots the cursor for the worker, which
++ * blends it after the primary copy. No scaling (no scaler) and it may be
++ * positioned freely, including partially off-screen.
++ */
++static int ocfb_cursor_atomic_check(struct drm_plane *plane,
++				    struct drm_atomic_state *state)
++{
++	struct ocfb_drm *ocfb = drm_to_ocfb(plane->dev);
++	struct drm_plane_state *ps = drm_atomic_get_new_plane_state(state, plane);
++	struct drm_crtc_state *cs;
++	int ret;
++
++	if (!ps->crtc)
++		return 0;			/* disabled */
++
++	cs = drm_atomic_get_new_crtc_state(state, ps->crtc);
++	ret = drm_atomic_helper_check_plane_state(ps, cs,
++						  DRM_PLANE_NO_SCALING,
++						  DRM_PLANE_NO_SCALING,
++						  true, true);
++	if (ret)
++		return ret;
++
++	/* without the engine + VRAM there is nothing to composite into */
++	if (ps->visible && !ocfb->copy_on_flip)
++		return -EINVAL;
++
++	return 0;
++}
++
++static void ocfb_cursor_atomic_update(struct drm_plane *plane,
++				      struct drm_atomic_state *state)
++{
++	struct ocfb_drm *ocfb = drm_to_ocfb(plane->dev);
++	struct drm_plane_state *old = drm_atomic_get_old_plane_state(state, plane);
++	struct drm_plane_state *new = drm_atomic_get_new_plane_state(state, plane);
++	struct drm_framebuffer *ofb;
++	unsigned long flags;
++
++	if (!ocfb->copy_on_flip)
++		return;
++
++	spin_lock_irqsave(&ocfb->damage_lock, flags);
++	/* erase the old position and paint the new one (primary restored under both) */
++	if (old && drm_rect_visible(&old->dst))
++		ocfb_rect_union(&ocfb->damage_pending, &old->dst);
++	if (new->visible)
++		ocfb_rect_union(&ocfb->damage_pending, &new->dst);
++	/* snapshot for the worker; take a reference to the new cursor fb */
++	ofb = ocfb->cur_fb;
++	ocfb->cur_fb = new->fb;
++	if (new->fb)
++		drm_framebuffer_get(new->fb);
++	ocfb->cur_dst     = new->dst;
++	ocfb->cur_srcx    = new->src.x1 >> 16;
++	ocfb->cur_srcy    = new->src.y1 >> 16;
++	ocfb->cur_visible = new->visible;
++	ocfb->present_active = true;
++	spin_unlock_irqrestore(&ocfb->damage_lock, flags);
++
++	if (ofb)
++		drm_framebuffer_put(ofb);
++}
++
++static void ocfb_cursor_atomic_disable(struct drm_plane *plane,
++				       struct drm_atomic_state *state)
++{
++	struct ocfb_drm *ocfb = drm_to_ocfb(plane->dev);
++	struct drm_plane_state *old = drm_atomic_get_old_plane_state(state, plane);
++	struct drm_framebuffer *ofb;
++	unsigned long flags;
++
++	if (!ocfb->copy_on_flip)
++		return;
++
++	spin_lock_irqsave(&ocfb->damage_lock, flags);
++	if (old && drm_rect_visible(&old->dst))		/* erase the last position */
++		ocfb_rect_union(&ocfb->damage_pending, &old->dst);
++	ocfb->cur_visible = false;
++	ofb = ocfb->cur_fb;
++	ocfb->cur_fb = NULL;
++	ocfb->present_active = true;
++	spin_unlock_irqrestore(&ocfb->damage_lock, flags);
++
++	if (ofb)
++		drm_framebuffer_put(ofb);
++}
++
++static const struct drm_plane_helper_funcs ocfb_cursor_helper_funcs = {
++	.prepare_fb	= drm_gem_plane_helper_prepare_fb,
++	.atomic_check	= ocfb_cursor_atomic_check,
++	.atomic_update	= ocfb_cursor_atomic_update,
++	.atomic_disable	= ocfb_cursor_atomic_disable,
++};
++
+ static const struct drm_encoder_funcs ocfb_encoder_funcs = {
+ 	.destroy = drm_encoder_cleanup,
+ };
+@@ -1555,6 +1734,9 @@ static int ocfb_modeset_init(struct ocfb_drm *ocfb)
+ 	drm->mode_config.max_width = 1920;
+ 	drm->mode_config.max_height = 1200;
+ 	drm->mode_config.funcs = &ocfb_mode_config_funcs;
++	/* HW cursor composited by the engine; advertise a generous max size */
++	drm->mode_config.cursor_width = 256;
++	drm->mode_config.cursor_height = 256;
+ 
+ 	/*
+ 	 * Full atomic pipeline: primary plane -> crtc -> encoder -> connector.
+@@ -1571,9 +1753,17 @@ static int ocfb_modeset_init(struct ocfb_drm *ocfb)
+ 	if (ret)
+ 		return ret;
+ 
++	drm_plane_helper_add(&ocfb->cursor, &ocfb_cursor_helper_funcs);
++	ret = drm_universal_plane_init(drm, &ocfb->cursor, 0, &ocfb_plane_funcs,
++				       ocfb_cursor_formats, ARRAY_SIZE(ocfb_cursor_formats),
++				       ocfb_format_modifiers, DRM_PLANE_TYPE_CURSOR,
++				       NULL);
++	if (ret)
++		return ret;
++
+ 	drm_crtc_helper_add(&ocfb->crtc, &ocfb_crtc_helper_funcs);
+-	ret = drm_crtc_init_with_planes(drm, &ocfb->crtc, &ocfb->primary, NULL,
+-					&ocfb_crtc_funcs, NULL);
++	ret = drm_crtc_init_with_planes(drm, &ocfb->crtc, &ocfb->primary,
++					&ocfb->cursor, &ocfb_crtc_funcs, NULL);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -2254,6 +2444,10 @@ static void ocfb_remove(struct platform_device *pdev)
+ 		LIST_HEAD(stragglers);
+ 
+ 		ocfb_damage_flush(ocfb);	/* no deferred present can still run */
++		if (ocfb->cur_fb) {		/* release a held cursor fb (shutdown usually does) */
++			drm_framebuffer_put(ocfb->cur_fb);
++			ocfb->cur_fb = NULL;
++		}
+ 
+ 		/* mask IRQs and stop ring processing before devm frees ring + IRQ */
+ 		ocfb_dma_wr(ocfb, OCFB_DMA_IRQEN, 0);
+-- 
+2.40.1
+
